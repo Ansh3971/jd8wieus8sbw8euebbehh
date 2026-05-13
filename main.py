@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 # =========================
@@ -78,27 +78,26 @@ class TelegramPaginator:
         return ("➡" in t) or ("next" in t) or (t.strip() in [">", "»"])
 
     async def scrape(self, query):
-
         pages = []
 
-        async with self.client.conversation(self.bot, timeout=60) as conv:
-
-            # send query
+        async with self.client.conversation(self.bot, timeout=120) as conv:
             await conv.send_message(query)
 
             for i in range(self.max_pages):
+                try:
+                    msg = await conv.get_response()
+                except Exception as e:
+                    print("No response:", e)
+                    break
 
-                # wait bot response
-                msg = await conv.get_response()
-
-                # ✅ raw_text is safest
+                # ✅ safest way
                 text = msg.raw_text or ""
+                print(f"DEBUG PAGE {i+1}:\n{text}\n")   # console debug
                 pages.append(text)
 
                 clicked = False
-
-                # check inline buttons
                 if msg.buttons:
+                    print("DEBUG BUTTONS:", [[btn.text for btn in row] for row in msg.buttons])
                     for row in msg.buttons:
                         for btn in row:
                             if self.is_next(btn.text):
@@ -167,10 +166,8 @@ def parsebottext(text: str):
 
 @app.post("/search")
 async def search(data: Query):
-
     try:
         paginator = TelegramPaginator(client, BOTUSERNAME)
-
         pages = await paginator.scrape(data.message)
 
         if not pages:
