@@ -3,9 +3,7 @@ import re
 import asyncio
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-
 from dotenv import load_dotenv
 
 from telethon import TelegramClient
@@ -93,7 +91,7 @@ class TelegramPaginator:
                 # wait bot response
                 msg = await conv.get_response()
 
-                text = msg.message or ""
+                text = msg.text or msg.message or ""
                 pages.append(text)
 
                 clicked = False
@@ -121,35 +119,45 @@ class TelegramPaginator:
 # =========================
 
 def parsebottext(text: str):
-
     lines = [clean_text(x) for x in text.split("\n") if clean_text(x)]
 
-    blocks = []
-    current = None
+    records = []
+    current = {}
+    tel_count = 1
+    addr_count = 1
 
     for line in lines:
+        if ":" in line:
+            key, val = line.split(":", 1)
+            key = key.strip()
+            val = val.strip()
 
-        # heading detection
-        if len(line) < 80 and ":" not in line:
-            current = {
-                "heading": line,
-                "content": []
-            }
-            blocks.append(current)
-            continue
+            # handle duplicate keys like Telephone / Adres
+            if key in current:
+                if key.lower().startswith("telephone"):
+                    key = f"Telephone_{tel_count}"
+                    tel_count += 1
+                elif key.lower().startswith("adres"):
+                    key = f"Adres_{addr_count}"
+                    addr_count += 1
+                else:
+                    key = key + "_dup"
 
-        if current is None:
-            current = {
-                "heading": "UNKNOWN",
-                "content": []
-            }
-            blocks.append(current)
+            current[key] = val
+        else:
+            # new record trigger
+            if current:
+                records.append(current)
+                current = {}
+                tel_count = 1
+                addr_count = 1
 
-        current["content"].append(line)
+    if current:
+        records.append(current)
 
     return {
-        "total_blocks": len(blocks),
-        "blocks": blocks
+        "total_records": len(records),
+        "records": records
     }
 
 # =========================
