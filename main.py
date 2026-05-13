@@ -1,11 +1,9 @@
 import os
 import re
-import json
 import asyncio
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-
 from pydantic import BaseModel
 
 from dotenv import load_dotenv
@@ -25,13 +23,10 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
-DOWNLOAD_BUTTON = os.getenv(
-    "DOWNLOAD_BUTTON",
-    "Download"
-)
+DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
 # =========================
-# FASTAPI
+# APP INIT
 # =========================
 
 app = FastAPI()
@@ -47,15 +42,11 @@ client = TelegramClient(
 )
 
 # =========================
-# DOWNLOAD FOLDER
+# DOWNLOAD DIR
 # =========================
 
 DOWNLOAD_DIR = "downloads"
-
-os.makedirs(
-    DOWNLOAD_DIR,
-    exist_ok=True
-)
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # =========================
 # REQUEST MODEL
@@ -65,594 +56,252 @@ class Query(BaseModel):
     message: str
 
 # =========================
-# STARTUP
+# STARTUP / SHUTDOWN
 # =========================
 
 @app.on_event("startup")
 async def startup():
-
     await client.start()
-
-    print(
-        "Telegram Client Started"
-    )
-
-# =========================
-# SHUTDOWN
-# =========================
+    print("Telegram Client Started")
 
 @app.on_event("shutdown")
 async def shutdown():
-
     await client.disconnect()
 
 # =========================
 # HOME PAGE
 # =========================
 
-@app.get(
-    "/",
-    response_class=HTMLResponse
-)
+@app.get("/", response_class=HTMLResponse)
 async def home():
-
     return """
     <html>
-
-        <head>
-            <title>
-                Universal HTML Parser API
-            </title>
-        </head>
-
-        <body
-            style="
-                font-family: Arial;
-                padding: 40px;
-            "
-        >
-
-            <h2>
-                Universal HTML Parser API
-            </h2>
-
-            <form
-                action="/test"
-                method="get"
-            >
-
-                <input
-                    type="text"
-                    name="q"
-                    placeholder="Enter query"
-                    style="
-                        width:300px;
-                        height:40px;
-                        padding:10px;
-                    "
-                >
-
-                <button
-                    type="submit"
-                    style="
-                        height:40px;
-                    "
-                >
-                    Search
-                </button>
-
+        <body style="font-family:Arial;padding:40px;">
+            <h2>AI HTML Extractor API</h2>
+            <form action="/test" method="get">
+                <input name="q" style="width:300px;height:40px;" placeholder="Enter query">
+                <button>Search</button>
             </form>
-
         </body>
-
     </html>
     """
 
 # =========================
-# UNIVERSAL HTML PARSER
+# CLEAN AI HTML PARSER
 # =========================
 
-def parse_html_universal(html):
+def parse_html_ai(html):
+    soup = BeautifulSoup(html, "html.parser")
 
-    soup = BeautifulSoup(
-        html,
-        "html.parser"
-    )
+    def clean(text):
+        return re.sub(r"\s+", " ", text).strip()
+
+    def valid(text):
+        return text and len(text) > 3
+
+    def is_noise(tag):
+        bad = ["nav", "footer", "header", "menu", "sidebar", "ads", "advert", "cookie"]
+        cls = " ".join(tag.get("class", [])).lower() if tag.get("class") else ""
+        tid = tag.get("id", "").lower()
+        return any(x in cls or x in tid for x in bad)
+
+    # remove junk
+    for t in soup(["script", "style", "noscript"]):
+        t.decompose()
 
     result = {
-        "title": None,
+        "title": clean(soup.title.get_text()) if soup.title else None,
         "meta": {},
+        "content": [],
         "links": [],
         "images": [],
         "tables": [],
-        "forms": [],
         "lists": [],
-        "codes": [],
-        "texts": [],
-        "blocks": []
+        "code": []
     }
 
-    # =====================
-    # TITLE
-    # =====================
+    # ================= META =================
+    for meta in soup.find_all("meta"):
+        k = meta.get("name") or meta.get("property")
+        v = meta.get("content")
+        if k and v:
+            result["meta"][k] = v
 
-    if soup.title:
-        result["title"] = (
-            soup.title.get_text(
-                " ",
-                strip=True
-            )
-        )
+    # ================= LINKS =================
+    seen_links = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = clean(a.get_text())
 
-    # =====================
-    # META TAGS
-    # =====================
-
-    metas = soup.find_all("meta")
-
-    for meta in metas:
-
-        name = (
-            meta.get("name")
-            or meta.get("property")
-            or meta.get("charset")
-        )
-
-        content = (
-            meta.get("content")
-            or meta.get("charset")
-        )
-
-        if name and content:
-            result["meta"][name] = content
-
-    # =====================
-    # LINKS
-    # =====================
-
-    for a in soup.find_all("a"):
-
-        href = a.get("href")
-
-        result["links"].append({
-            "text": a.get_text(
-                " ",
-                strip=True
-            ),
-            "href": href
-        })
-
-    # =====================
-    # IMAGES
-    # =====================
-
-    for img in soup.find_all("img"):
-
-        result["images"].append({
-            "src": img.get("src"),
-            "alt": img.get("alt")
-        })
-
-    # =====================
-    # TABLES
-    # =====================
-
-    for table in soup.find_all("table"):
-
-        rows_data = []
-
-        rows = table.find_all("tr")
-
-        for row in rows:
-
-            cols = row.find_all(
-                ["td", "th"]
-            )
-
-            row_data = []
-
-            for col in cols:
-
-                row_data.append(
-                    col.get_text(
-                        " ",
-                        strip=True
-                    )
-                )
-
-            if row_data:
-                rows_data.append(
-                    row_data
-                )
-
-        if rows_data:
-            result["tables"].append(
-                rows_data
-            )
-
-    # =====================
-    # FORMS
-    # =====================
-
-    for form in soup.find_all("form"):
-
-        inputs = []
-
-        for inp in form.find_all(
-            ["input", "textarea", "select"]
-        ):
-
-            inputs.append({
-                "type": inp.get("type"),
-                "name": inp.get("name"),
-                "value": inp.get("value"),
-                "placeholder": inp.get(
-                    "placeholder"
-                )
+        if href not in seen_links and valid(text):
+            seen_links.add(href)
+            result["links"].append({
+                "text": text,
+                "url": href
             })
 
-        result["forms"].append({
-            "action": form.get("action"),
-            "method": form.get("method"),
-            "inputs": inputs
-        })
+    # ================= IMAGES =================
+    seen_img = set()
+    for img in soup.find_all("img", src=True):
+        src = img["src"]
 
-    # =====================
-    # LISTS
-    # =====================
+        if src not in seen_img:
+            seen_img.add(src)
+            result["images"].append({
+                "url": src,
+                "alt": img.get("alt", "")
+            })
 
-    for ul in soup.find_all(
-        ["ul", "ol"]
-    ):
+    # ================= TABLES =================
+    for table in soup.find_all("table"):
+        rows = []
+        for tr in table.find_all("tr"):
+            cols = [clean(td.get_text()) for td in tr.find_all(["td", "th"])]
+            if cols:
+                rows.append(cols)
+        if rows:
+            result["tables"].append(rows)
 
+    # ================= LISTS =================
+    for ul in soup.find_all(["ul", "ol"]):
         items = []
-
         for li in ul.find_all("li"):
-
-            items.append(
-                li.get_text(
-                    " ",
-                    strip=True
-                )
-            )
-
+            txt = clean(li.get_text())
+            if valid(txt):
+                items.append(txt)
         if items:
-            result["lists"].append(
-                items
-            )
+            result["lists"].append(items)
 
-    # =====================
-    # CODE BLOCKS
-    # =====================
+    # ================= CODE =================
+    seen_code = set()
+    for code in soup.find_all(["pre", "code"]):
+        txt = clean(code.get_text())
+        if valid(txt) and txt not in seen_code:
+            seen_code.add(txt)
+            result["code"].append(txt)
 
-    for code in soup.find_all(
-        ["code", "pre"]
-    ):
+    # ================= MAIN ARTICLE EXTRACTION =================
+    candidates = soup.find_all(["article", "main", "div", "section"])
+    best_block = None
+    best_score = 0
 
-        text = code.get_text(
-            "\n",
-            strip=True
-        )
+    for block in candidates:
+        if is_noise(block):
+            continue
 
-        if text:
+        text = clean(block.get_text(" "))
+        score = len(text)
 
-            result["codes"].append(
-                text
-            )
+        if score > best_score:
+            best_score = score
+            best_block = block
 
-    # =====================
-    # TEXT BLOCKS
-    # =====================
+    if not best_block:
+        best_block = soup.body or soup
 
-    text_tags = soup.find_all([
-        "p",
-        "span",
-        "div",
-        "section",
-        "article"
-    ])
+    seen_text = set()
 
-    for tag in text_tags:
+    for tag in best_block.find_all(["h1", "h2", "h3", "h4", "p"]):
+        text = clean(tag.get_text())
 
-        text = tag.get_text(
-            " ",
-            strip=True
-        )
+        if not valid(text):
+            continue
 
-        text = re.sub(
-            r"\\s+",
-            " ",
-            text
-        )
+        if text in seen_text:
+            continue
 
-        if (
-            text
-            and len(text) > 2
-        ):
+        seen_text.add(text)
 
-            result["texts"].append(
-                text
-            )
-
-    # =====================
-    # UNIVERSAL BLOCK PARSER
-    # =====================
-
-    all_blocks = soup.find_all(
-        [
-            "div",
-            "section",
-            "article",
-            "table"
-        ]
-    )
-
-    for block in all_blocks:
-
-        item = {}
-
-        # HEADINGS
-
-        heading = block.find(
-            [
-                "h1",
-                "h2",
-                "h3",
-                "h4",
-                "b"
-            ]
-        )
-
-        if heading:
-
-            item["heading"] = (
-                heading.get_text(
-                    " ",
-                    strip=True
-                )
-            )
-
-        # RAW TEXT
-
-        raw_text = block.get_text(
-            "\n",
-            strip=True
-        )
-
-        raw_text = re.sub(
-            r"\\n+",
-            "\\n",
-            raw_text
-        )
-
-        if raw_text:
-
-            item["text"] = raw_text
-
-        # KEYS VALUES
-
-        kv = {}
-
-        bolds = block.find_all("b")
-
-        for b in bolds:
-
-            key = b.get_text(
-                " ",
-                strip=True
-            )
-
-            key = key.replace(
-                ":",
-                ""
-            ).strip()
-
-            value = ""
-
-            code = b.find_next(
-                "code"
-            )
-
-            if code:
-
-                value = code.get_text(
-                    " ",
-                    strip=True
-                )
-
+        if tag.name.startswith("h"):
+            result["content"].append({
+                "type": "heading",
+                "level": tag.name,
+                "text": text,
+                "children": []
+            })
+        else:
+            if result["content"] and result["content"][-1]["type"] == "heading":
+                result["content"][-1]["children"].append(text)
             else:
-
-                nxt = b.next_sibling
-
-                if nxt:
-
-                    value = str(
-                        nxt
-                    ).strip()
-
-            value = (
-                value
-                .replace("\\n", " ")
-                .replace("<br/>", "")
-                .replace("<br>", "")
-                .strip()
-            )
-
-            if value:
-
-                if key in kv:
-
-                    if isinstance(
-                        kv[key],
-                        list
-                    ):
-
-                        kv[key].append(
-                            value
-                        )
-
-                    else:
-
-                        kv[key] = [
-                            kv[key],
-                            value
-                        ]
-
-                else:
-
-                    kv[key] = value
-
-        if kv:
-
-            item["fields"] = kv
-
-        if item:
-
-            result["blocks"].append(
-                item
-            )
+                result["content"].append({
+                    "type": "paragraph",
+                    "text": text
+                })
 
     return result
 
 # =========================
-# SEARCH FUNCTION
+# SEARCH FLOW (TELEGRAM BOT)
 # =========================
 
 @app.post("/search")
 async def search(data: Query):
 
     try:
-
-        # SEND MESSAGE
-
-        await client.send_message(
-            BOT_USERNAME,
-            data.message
-        )
-
-        # WAIT
+        await client.send_message(BOT_USERNAME, data.message)
 
         await asyncio.sleep(3)
 
-        messages = await client.get_messages(
-            BOT_USERNAME,
-            limit=1
-        )
+        messages = await client.get_messages(BOT_USERNAME, limit=1)
 
         if not messages:
-
-            return {
-                "status": False,
-                "error": "No response"
-            }
+            return {"status": False, "error": "No response"}
 
         reply = messages[0]
 
-        # CLICK BUTTON
-
+        # click button
         try:
-
-            await reply.click(
-                text=DOWNLOAD_BUTTON
-            )
-
-        except Exception:
-
+            await reply.click(text=DOWNLOAD_BUTTON)
+        except:
             try:
-
                 await reply.click(0)
-
             except Exception as e:
+                return {"status": False, "error": str(e)}
 
-                return {
-                    "status": False,
-                    "error": str(e)
-                }
-
-        # WAIT FILE
-
+        # wait file
         file_message = None
 
         for _ in range(20):
-
             await asyncio.sleep(1)
 
-            latest = await client.get_messages(
-                BOT_USERNAME,
-                limit=1
-            )
+            latest = await client.get_messages(BOT_USERNAME, limit=1)
 
-            if (
-                latest
-                and latest[0].file
-            ):
-
+            if latest and latest[0].file:
                 file_message = latest[0]
-
                 break
 
         if not file_message:
-
-            return {
-                "status": False,
-                "error": "No file"
-            }
-
-        # DOWNLOAD FILE
+            return {"status": False, "error": "No file received"}
 
         file_path = await client.download_media(
             file_message,
             file=DOWNLOAD_DIR
         )
 
-        file_name = os.path.basename(
-            file_path
-        )
+        file_name = os.path.basename(file_path)
 
         response = {
             "status": True,
             "query": data.message,
-            "file_name": file_name,
-            "size": os.path.getsize(
-                file_path
-            )
+            "file_name": file_name
         }
 
-        # PARSE HTML
-
+        # parse HTML if exists
         if file_name.endswith(".html"):
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                html = f.read()
 
-            with open(
-                file_path,
-                "r",
-                encoding="utf-8",
-                errors="ignore"
-            ) as f:
-
-                html_content = f.read()
-
-            parsed = parse_html_universal(
-                html_content
-            )
-
-            response["parsed"] = parsed
+            response["parsed"] = parse_html_ai(html)
 
         return response
 
     except Exception as e:
-
-        return {
-            "status": False,
-            "error": str(e)
-        }
+        return {"status": False, "error": str(e)}
 
 # =========================
-# BROWSER SEARCH
+# TEST ENDPOINT
 # =========================
 
 @app.get("/test")
 async def test(q: str):
-
-    return await search(
-        Query(message=q)
-)
+    return await search(Query(message=q))
