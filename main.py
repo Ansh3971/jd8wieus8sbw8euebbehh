@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from dotenv import load_dotenv
+
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
@@ -16,10 +17,10 @@ from telethon.sessions import StringSession
 
 load_dotenv()
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
+APIID = int(os.getenv("APIID"))
+APIHASH = os.getenv("APIHASH")
 SESSION = os.getenv("SESSION")
-BOT_USERNAME = os.getenv("BOT_USERNAME")
+BOTUSERNAME = os.getenv("BOTUSERNAME")
 
 # =========================
 # APP
@@ -29,8 +30,8 @@ app = FastAPI()
 
 client = TelegramClient(
     StringSession(SESSION),
-    API_ID,
-    API_HASH
+    APIID,
+    APIHASH
 )
 
 # =========================
@@ -41,120 +42,77 @@ class Query(BaseModel):
     message: str
 
 # =========================
-# START / STOP
+# STARTUP
 # =========================
 
 @app.on_event("startup")
 async def startup():
     await client.start()
-    print("✅ Telegram Client Started")
+    print("Telegram Client Started")
 
 @app.on_event("shutdown")
 async def shutdown():
     await client.disconnect()
 
 # =========================
-# HOME
-# =========================
-
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <html>
-        <body style="font-family:Arial;padding:30px;">
-            <h2>PRO Scraper API</h2>
-            <form action="/test" method="get">
-                <input name="q" style="width:300px;height:40px">
-                <button>Search</button>
-            </form>
-        </body>
-    </html>
-    """
-
-# =========================
 # CLEAN
 # =========================
 
 def clean_text(t):
-    if not t:
-        return ""
-    return re.sub(r"\s+", " ", str(t)).strip()
+    return re.sub(r"\s+", " ", str(t)).strip() if t else ""
 
 # =========================
-# PRO PAGINATION SCRAPER
+# PAGINATION SCRAPER
 # =========================
 
 class TelegramPaginator:
 
-    def __init__(self, client, bot_username, max_pages=20, delay=1.2):
+    def __init__(self, client, bot, max_pages=20, delay=1.0):
         self.client = client
-        self.bot = bot_username
+        self.bot = bot
         self.max_pages = max_pages
         self.delay = delay
 
-    async def get_latest_message(self):
-        msgs = await self.client.get_messages(self.bot, limit=1)
-        return msgs[0] if msgs else None
-
-    def is_next_button(self, text):
+    def is_next(self, text):
         if not text:
             return False
         t = text.lower()
-        return t in ["➡", ">", "next", "»", "forward"] or "next" in t
+        return ("➡" in t) or ("next" in t) or (t.strip() in [">", "»"])
 
-    async def scrape(self):
-
-        msg = await self.get_latest_message()
-        if not msg:
-            return []
+    async def scrape(self, query):
 
         pages = []
-        seen_ids = set()
 
-        for _ in range(self.max_pages):
+        async with self.client.conversation(self.bot, timeout=60) as conv:
 
-            text = msg.message or ""
+            # send query
+            await conv.send_message(query)
 
-            # prevent duplicate pages
-            if msg.id in seen_ids:
-                break
+            for i in range(self.max_pages):
 
-            seen_ids.add(msg.id)
-            pages.append(text)
+                # wait bot response
+                msg = await conv.get_response()
 
-            clicked = False
+                text = msg.message or ""
+                pages.append(text)
 
-            # =========================
-            # BUTTON CLICK HANDLING
-            # =========================
-            try:
+                clicked = False
+
+                # check inline buttons
                 if msg.buttons:
                     for row in msg.buttons:
                         for btn in row:
-                            if self.is_next_button(btn.text):
+                            if self.is_next(btn.text):
                                 await btn.click()
                                 clicked = True
                                 break
                         if clicked:
                             break
-            except Exception as e:
-                print("Button error:", e)
-                break
 
-            if not clicked:
-                break
+                if not clicked:
+                    break
 
-            await asyncio.sleep(self.delay)
-
-            # =========================
-            # SAFE MESSAGE REFRESH
-            # (IMPORTANT FIX)
-            # =========================
-            new_msg = await self.client.get_messages(self.bot, limit=1)
-            if not new_msg:
-                break
-
-            msg = new_msg[0]
+                await asyncio.sleep(self.delay)
 
         return pages
 
@@ -162,7 +120,7 @@ class TelegramPaginator:
 # RAW TEXT → JSON
 # =========================
 
-def parse_bot_text(text: str):
+def parsebottext(text: str):
 
     lines = [clean_text(x) for x in text.split("\n") if clean_text(x)]
 
@@ -172,7 +130,7 @@ def parse_bot_text(text: str):
     for line in lines:
 
         # heading detection
-        if len(line) < 60 and "📞" not in line and ":" not in line:
+        if len(line) < 80 and ":" not in line:
             current = {
                 "heading": line,
                 "content": []
@@ -202,31 +160,23 @@ def parse_bot_text(text: str):
 async def search(data: Query):
 
     try:
-        await client.send_message(BOT_USERNAME, data.message)
+        paginator = TelegramPaginator(client, BOTUSERNAME)
 
-        paginator = TelegramPaginator(client, BOT_USERNAME)
-
-        pages = await paginator.scrape()
+        pages = await paginator.scrape(data.message)
 
         if not pages:
-            return {
-                "status": False,
-                "error": "No data received"
-            }
+            return {"status": False, "error": "No data"}
 
         full_text = "\n".join(pages)
 
         return {
             "status": True,
             "pages": len(pages),
-            "parsed": parse_bot_text(full_text)
+            "parsed": parsebottext(full_text)
         }
 
     except Exception as e:
-        return {
-            "status": False,
-            "error": str(e)
-        }
+        return {"status": False, "error": str(e)}
 
 # =========================
 # TEST
