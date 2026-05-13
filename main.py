@@ -15,10 +15,22 @@ from telethon.sessions import StringSession
 
 load_dotenv()
 
-APIID = int(os.getenv("APIID"))
+APIID = os.getenv("APIID")
+if not APIID:
+    raise ValueError("APIID not found in .env file")
+APIID = int(APIID)
+
 APIHASH = os.getenv("APIHASH")
+if not APIHASH:
+    raise ValueError("APIHASH not found in .env file")
+
 SESSION = os.getenv("SESSION")
+if not SESSION:
+    raise ValueError("SESSION not found in .env file")
+
 BOTUSERNAME = os.getenv("BOTUSERNAME")
+if not BOTUSERNAME:
+    raise ValueError("BOTUSERNAME not found in .env file")
 
 # =========================
 # APP
