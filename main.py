@@ -1,11 +1,18 @@
 import os
+import re
+import json
 import asyncio
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+
 from pydantic import BaseModel
+
 from dotenv import load_dotenv
+
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+
 from bs4 import BeautifulSoup
 
 # =========================
@@ -18,7 +25,10 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
-DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
+DOWNLOAD_BUTTON = os.getenv(
+    "DOWNLOAD_BUTTON",
+    "Download"
+)
 
 # =========================
 # FASTAPI
@@ -41,7 +51,11 @@ client = TelegramClient(
 # =========================
 
 DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+os.makedirs(
+    DOWNLOAD_DIR,
+    exist_ok=True
+)
 
 # =========================
 # REQUEST MODEL
@@ -56,8 +70,12 @@ class Query(BaseModel):
 
 @app.on_event("startup")
 async def startup():
+
     await client.start()
-    print("Telegram Client Started")
+
+    print(
+        "Telegram Client Started"
+    )
 
 # =========================
 # SHUTDOWN
@@ -65,46 +83,439 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+
     await client.disconnect()
 
 # =========================
 # HOME PAGE
 # =========================
 
-@app.get("/", response_class=HTMLResponse)
+@app.get(
+    "/",
+    response_class=HTMLResponse
+)
 async def home():
+
     return """
     <html>
+
         <head>
-            <title>Telegram Search API</title>
+            <title>
+                Universal HTML Parser API
+            </title>
         </head>
 
-        <body style="font-family: Arial; padding: 40px;">
-            <h2>Telegram Search API</h2>
+        <body
+            style="
+                font-family: Arial;
+                padding: 40px;
+            "
+        >
 
-            <form action="/test" method="get">
+            <h2>
+                Universal HTML Parser API
+            </h2>
+
+            <form
+                action="/test"
+                method="get"
+            >
 
                 <input
                     type="text"
                     name="q"
                     placeholder="Enter query"
-                    style="width:300px;height:40px;padding:10px;"
+                    style="
+                        width:300px;
+                        height:40px;
+                        padding:10px;
+                    "
                 >
 
                 <button
                     type="submit"
-                    style="height:40px;"
+                    style="
+                        height:40px;
+                    "
                 >
                     Search
                 </button>
 
             </form>
+
         </body>
+
     </html>
     """
 
 # =========================
-# MAIN SEARCH FUNCTION
+# UNIVERSAL HTML PARSER
+# =========================
+
+def parse_html_universal(html):
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
+
+    result = {
+        "title": None,
+        "meta": {},
+        "links": [],
+        "images": [],
+        "tables": [],
+        "forms": [],
+        "lists": [],
+        "codes": [],
+        "texts": [],
+        "blocks": []
+    }
+
+    # =====================
+    # TITLE
+    # =====================
+
+    if soup.title:
+        result["title"] = (
+            soup.title.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+    # =====================
+    # META TAGS
+    # =====================
+
+    metas = soup.find_all("meta")
+
+    for meta in metas:
+
+        name = (
+            meta.get("name")
+            or meta.get("property")
+            or meta.get("charset")
+        )
+
+        content = (
+            meta.get("content")
+            or meta.get("charset")
+        )
+
+        if name and content:
+            result["meta"][name] = content
+
+    # =====================
+    # LINKS
+    # =====================
+
+    for a in soup.find_all("a"):
+
+        href = a.get("href")
+
+        result["links"].append({
+            "text": a.get_text(
+                " ",
+                strip=True
+            ),
+            "href": href
+        })
+
+    # =====================
+    # IMAGES
+    # =====================
+
+    for img in soup.find_all("img"):
+
+        result["images"].append({
+            "src": img.get("src"),
+            "alt": img.get("alt")
+        })
+
+    # =====================
+    # TABLES
+    # =====================
+
+    for table in soup.find_all("table"):
+
+        rows_data = []
+
+        rows = table.find_all("tr")
+
+        for row in rows:
+
+            cols = row.find_all(
+                ["td", "th"]
+            )
+
+            row_data = []
+
+            for col in cols:
+
+                row_data.append(
+                    col.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+            if row_data:
+                rows_data.append(
+                    row_data
+                )
+
+        if rows_data:
+            result["tables"].append(
+                rows_data
+            )
+
+    # =====================
+    # FORMS
+    # =====================
+
+    for form in soup.find_all("form"):
+
+        inputs = []
+
+        for inp in form.find_all(
+            ["input", "textarea", "select"]
+        ):
+
+            inputs.append({
+                "type": inp.get("type"),
+                "name": inp.get("name"),
+                "value": inp.get("value"),
+                "placeholder": inp.get(
+                    "placeholder"
+                )
+            })
+
+        result["forms"].append({
+            "action": form.get("action"),
+            "method": form.get("method"),
+            "inputs": inputs
+        })
+
+    # =====================
+    # LISTS
+    # =====================
+
+    for ul in soup.find_all(
+        ["ul", "ol"]
+    ):
+
+        items = []
+
+        for li in ul.find_all("li"):
+
+            items.append(
+                li.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+        if items:
+            result["lists"].append(
+                items
+            )
+
+    # =====================
+    # CODE BLOCKS
+    # =====================
+
+    for code in soup.find_all(
+        ["code", "pre"]
+    ):
+
+        text = code.get_text(
+            "\n",
+            strip=True
+        )
+
+        if text:
+
+            result["codes"].append(
+                text
+            )
+
+    # =====================
+    # TEXT BLOCKS
+    # =====================
+
+    text_tags = soup.find_all([
+        "p",
+        "span",
+        "div",
+        "section",
+        "article"
+    ])
+
+    for tag in text_tags:
+
+        text = tag.get_text(
+            " ",
+            strip=True
+        )
+
+        text = re.sub(
+            r"\\s+",
+            " ",
+            text
+        )
+
+        if (
+            text
+            and len(text) > 2
+        ):
+
+            result["texts"].append(
+                text
+            )
+
+    # =====================
+    # UNIVERSAL BLOCK PARSER
+    # =====================
+
+    all_blocks = soup.find_all(
+        [
+            "div",
+            "section",
+            "article",
+            "table"
+        ]
+    )
+
+    for block in all_blocks:
+
+        item = {}
+
+        # HEADINGS
+
+        heading = block.find(
+            [
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "b"
+            ]
+        )
+
+        if heading:
+
+            item["heading"] = (
+                heading.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+        # RAW TEXT
+
+        raw_text = block.get_text(
+            "\n",
+            strip=True
+        )
+
+        raw_text = re.sub(
+            r"\\n+",
+            "\\n",
+            raw_text
+        )
+
+        if raw_text:
+
+            item["text"] = raw_text
+
+        # KEYS VALUES
+
+        kv = {}
+
+        bolds = block.find_all("b")
+
+        for b in bolds:
+
+            key = b.get_text(
+                " ",
+                strip=True
+            )
+
+            key = key.replace(
+                ":",
+                ""
+            ).strip()
+
+            value = ""
+
+            code = b.find_next(
+                "code"
+            )
+
+            if code:
+
+                value = code.get_text(
+                    " ",
+                    strip=True
+                )
+
+            else:
+
+                nxt = b.next_sibling
+
+                if nxt:
+
+                    value = str(
+                        nxt
+                    ).strip()
+
+            value = (
+                value
+                .replace("\\n", " ")
+                .replace("<br/>", "")
+                .replace("<br>", "")
+                .strip()
+            )
+
+            if value:
+
+                if key in kv:
+
+                    if isinstance(
+                        kv[key],
+                        list
+                    ):
+
+                        kv[key].append(
+                            value
+                        )
+
+                    else:
+
+                        kv[key] = [
+                            kv[key],
+                            value
+                        ]
+
+                else:
+
+                    kv[key] = value
+
+        if kv:
+
+            item["fields"] = kv
+
+        if item:
+
+            result["blocks"].append(
+                item
+            )
+
+    return result
+
+# =========================
+# SEARCH FUNCTION
 # =========================
 
 @app.post("/search")
@@ -113,12 +524,14 @@ async def search(data: Query):
     try:
 
         # SEND MESSAGE
+
         await client.send_message(
             BOT_USERNAME,
             data.message
         )
 
-        # WAIT BOT RESPONSE
+        # WAIT
+
         await asyncio.sleep(3)
 
         messages = await client.get_messages(
@@ -127,35 +540,40 @@ async def search(data: Query):
         )
 
         if not messages:
+
             return {
                 "status": False,
-                "error": "No response from bot"
+                "error": "No response"
             }
 
-        reply_message = messages[0]
+        reply = messages[0]
 
-        # CLICK DOWNLOAD BUTTON
+        # CLICK BUTTON
+
         try:
-            await reply_message.click(
+
+            await reply.click(
                 text=DOWNLOAD_BUTTON
             )
 
         except Exception:
 
             try:
-                await reply_message.click(0)
+
+                await reply.click(0)
 
             except Exception as e:
 
                 return {
                     "status": False,
-                    "error": f"Button click failed: {str(e)}"
+                    "error": str(e)
                 }
 
-        # WAIT FOR FILE
+        # WAIT FILE
+
         file_message = None
 
-        for _ in range(15):
+        for _ in range(20):
 
             await asyncio.sleep(1)
 
@@ -164,34 +582,43 @@ async def search(data: Query):
                 limit=1
             )
 
-            if latest and latest[0].file:
+            if (
+                latest
+                and latest[0].file
+            ):
+
                 file_message = latest[0]
+
                 break
 
         if not file_message:
+
             return {
                 "status": False,
-                "error": "No file received"
+                "error": "No file"
             }
 
         # DOWNLOAD FILE
+
         file_path = await client.download_media(
             file_message,
             file=DOWNLOAD_DIR
         )
 
-        file_name = os.path.basename(file_path)
+        file_name = os.path.basename(
+            file_path
+        )
 
         response = {
             "status": True,
             "query": data.message,
             "file_name": file_name,
-            "size": os.path.getsize(file_path)
+            "size": os.path.getsize(
+                file_path
+            )
         }
 
-        # =========================
-        # READ HTML FILE
-        # =========================
+        # PARSE HTML
 
         if file_name.endswith(".html"):
 
@@ -204,114 +631,11 @@ async def search(data: Query):
 
                 html_content = f.read()
 
-            soup = BeautifulSoup(
-                html_content,
-                "html.parser"
+            parsed = parse_html_universal(
+                html_content
             )
 
-            # ALL BLOCKS
-            blocks = soup.find_all(
-                "div",
-                class_="block"
-            )
-
-            clean_results = []
-
-            for block in blocks:
-
-                # SOURCE NAME
-                title_tag = block.find(
-                    "div",
-                    class_="block-title"
-                )
-
-                source_name = (
-                    title_tag.get_text(strip=True)
-                    if title_tag else "Unknown"
-                )
-
-                # BLOCK TEXT
-                text_div = block.find(
-                    "div",
-                    class_="block-text"
-                )
-
-                if not text_div:
-                    continue
-
-                # FIND ALL LABELS
-                labels = text_div.find_all("b")
-
-                parsed = {}
-
-                for label in labels:
-
-                    # CLEAN KEY
-                    key = label.get_text(
-                        strip=True
-                    ).replace(":", "")
-
-                    key = (
-                        key.replace("📞", "")
-                           .replace("📩", "")
-                           .replace("👤", "")
-                           .replace("🏘️", "")
-                           .replace("👨", "")
-                           .replace("🗺️", "")
-                           .replace("🎯", "")
-                           .replace("📆", "")
-                           .replace("🃏", "")
-                           .replace("🌃", "")
-                           .replace("🔑", "")
-                           .replace("🔐", "")
-                           .replace("💶", "")
-                           .replace("💸", "")
-                           .replace("🚻", "")
-                           .replace("🌐", "")
-                           .replace("🔎", "")
-                           .replace("🏢", "")
-                           .replace("🗾", "")
-                           .strip()
-                    )
-
-                    value = ""
-
-                    # NEXT VALUE
-                    next_node = label.next_sibling
-
-                    if next_node:
-                        value = str(next_node).strip()
-
-                    # CLEAN VALUE
-                    value = (
-                        value.replace("<br/>", "")
-                             .replace("<br>", "")
-                             .replace("\n", " ")
-                             .strip()
-                    )
-
-                    # MULTIPLE VALUES SUPPORT
-                    if key in parsed:
-
-                        if isinstance(parsed[key], list):
-                            parsed[key].append(value)
-
-                        else:
-                            parsed[key] = [
-                                parsed[key],
-                                value
-                            ]
-
-                    else:
-                        parsed[key] = value
-
-                clean_results.append({
-                    "source": source_name,
-                    "data": parsed
-                })
-
-            # FINAL JSON
-            response["results"] = clean_results
+            response["parsed"] = parsed
 
         return response
 
@@ -331,4 +655,4 @@ async def test(q: str):
 
     return await search(
         Query(message=q)
-    )
+)
