@@ -5,38 +5,35 @@ import asyncio
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-
 from pydantic import BaseModel
-
 from dotenv import load_dotenv
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from bs4 import BeautifulSoup
+from collections import defaultdict
 
 # =========================
 # LOAD ENV
 # =========================
-
 load_dotenv()
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
+
 DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
 # =========================
 # FASTAPI
 # =========================
-
 app = FastAPI()
 
 # =========================
 # TELEGRAM CLIENT
 # =========================
-
 client = TelegramClient(
     StringSession(SESSION),
     API_ID,
@@ -44,186 +41,189 @@ client = TelegramClient(
 )
 
 # =========================
-# DOWNLOAD FOLDER
+# DOWNLOAD DIR
 # =========================
-
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # =========================
 # REQUEST MODEL
 # =========================
-
 class Query(BaseModel):
     message: str
 
-# =========================
-# STARTUP
-# =========================
 
+# =========================
+# STARTUP / SHUTDOWN
+# =========================
 @app.on_event("startup")
 async def startup():
     await client.start()
     print("Telegram Client Started")
 
-# =========================
-# SHUTDOWN
-# =========================
 
 @app.on_event("shutdown")
 async def shutdown():
     await client.disconnect()
 
-# =========================
-# HOME PAGE
-# =========================
 
+# =========================
+# HOME
+# =========================
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
     <html>
-        <head><title>Universal HTML Parser API</title></head>
-        <body style="font-family: Arial; padding: 40px;">
+        <body style="font-family:Arial;padding:40px;">
             <h2>Universal HTML Parser API</h2>
-
             <form action="/test" method="get">
-                <input type="text" name="q" placeholder="Enter query"
-                    style="width:300px;height:40px;padding:10px;">
-                <button style="height:40px;">Search</button>
+                <input name="q" style="width:300px;height:40px" placeholder="Enter query">
+                <button>Search</button>
             </form>
-
         </body>
     </html>
     """
 
-# =========================
-# 🔥 CLEAN UNIVERSAL PARSER (FIXED VERSION)
-# =========================
 
+# =========================
+# CLEAN HELPER
+# =========================
+def clean_text(text):
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+# =========================
+# UNIVERSAL CLEAN PARSER (FIXED)
+# =========================
 def parse_html_universal(html):
 
     soup = BeautifulSoup(html, "html.parser")
 
-    def clean(t):
-        return re.sub(r"\s+", " ", t).strip()
-
     result = {
-        "title": clean(soup.title.get_text()) if soup.title else None,
-        "meta": {},
-        "links": [],
-        "images": [],
-        "tables": [],
-        "forms": [],
-        "lists": [],
-        "blocks": []
+        "title": "",
+        "navigation": [],
+        "sections": [],
+        "global_fields": {
+            "emails": [],
+            "phones": [],
+            "addresses": [],
+            "names": [],
+            "documents": [],
+            "regions": []
+        }
     }
 
-    # =====================
-    # META (NO DUPLICATES)
-    # =====================
-    for m in soup.find_all("meta"):
-        k = m.get("name") or m.get("property") or m.get("charset")
-        v = m.get("content") or m.get("charset")
+    seen_texts = set()
 
-        if k and v and k not in result["meta"]:
-            result["meta"][k] = v
+    # TITLE
+    if soup.title:
+        result["title"] = clean_text(soup.title.get_text())
 
-    # =====================
-    # LINKS (NO DUPLICATES)
-    # =====================
-    seen_links = set()
-
-    for a in soup.find_all("a"):
-        href = a.get("href")
-        text = clean(a.get_text())
-
-        key = (text, href)
-
-        if href and key not in seen_links:
-            seen_links.add(key)
-            result["links"].append({
-                "text": text,
-                "href": href
+    # NAVIGATION
+    nav = soup.find("div", class_="nav")
+    if nav:
+        for a in nav.find_all("a"):
+            result["navigation"].append({
+                "id": a.get("href", "").replace("#", ""),
+                "label": clean_text(a.get_text())
             })
 
-    # =====================
-    # IMAGES (NO DUPLICATES)
-    # =====================
-    seen_img = set()
+    # SECTIONS
+    blocks = soup.find_all("div", class_="block")
 
-    for img in soup.find_all("img"):
-        src = img.get("src")
+    for block in blocks:
 
-        if src and src not in seen_img:
-            seen_img.add(src)
-            result["images"].append({
-                "src": src,
-                "alt": clean(img.get("alt") or "")
+        section = {
+            "id": block.get("id", ""),
+            "heading": "",
+            "description": "",
+            "content_blocks": []
+        }
+
+        # heading
+        h = block.find(class_="block-title")
+        if h:
+            section["heading"] = clean_text(h.get_text())
+
+        # text block
+        text_block = block.find(class_="block-text")
+
+        if text_block:
+
+            raw = clean_text(text_block.get_text(" "))
+
+            if raw and raw not in seen_texts:
+                seen_texts.add(raw)
+
+                section["content_blocks"].append({
+                    "type": "text",
+                    "value": raw
+                })
+
+        # field extraction
+        fields = defaultdict(list)
+
+        if text_block:
+
+            for b in text_block.find_all("b"):
+
+                key = clean_text(b.get_text().replace(":", ""))
+
+                value = ""
+
+                code = b.find_next("code")
+                if code:
+                    value = clean_text(code.get_text())
+                else:
+                    nxt = b.next_sibling
+                    if nxt:
+                        value = clean_text(str(nxt))
+
+                if key and value:
+
+                    fields[key].append(value)
+
+                    low = key.lower()
+
+                    if "email" in low:
+                        result["global_fields"]["emails"].append(value)
+
+                    elif "telephone" in low or "phone" in low:
+                        result["global_fields"]["phones"].append(value)
+
+                    elif "adres" in low or "address" in low:
+                        result["global_fields"]["addresses"].append(value)
+
+                    elif "name" in low:
+                        result["global_fields"]["names"].append(value)
+
+                    elif "document" in low or "passport" in low:
+                        result["global_fields"]["documents"].append(value)
+
+                    elif "region" in low:
+                        result["global_fields"]["regions"].append(value)
+
+        if fields:
+            section["content_blocks"].append({
+                "type": "field_group",
+                "fields": dict(fields)
             })
 
-    # =====================
-    # TABLES
-    # =====================
-    for table in soup.find_all("table"):
-        rows = []
+        result["sections"].append(section)
 
-        for tr in table.find_all("tr"):
-            cols = [clean(c.get_text()) for c in tr.find_all(["td", "th"])]
-            if cols:
-                rows.append(cols)
-
-        if rows:
-            result["tables"].append(rows)
-
-    # =====================
-    # LISTS
-    # =====================
-    for ul in soup.find_all(["ul", "ol"]):
-        items = []
-
-        for li in ul.find_all("li"):
-            t = clean(li.get_text())
-            if t:
-                items.append(t)
-
-        if items:
-            result["lists"].append(items)
-
-    # =====================
-    # BLOCKS (NO DUPLICATE + NO BIG PARAGRAPH DUMP)
-    # =====================
-    seen_blocks = set()
-
-    for tag in soup.find_all(["div", "section", "article"]):
-
-        text = clean(tag.get_text(" "))
-
-        if not text or len(text) < 3:
-            continue
-
-        if text in seen_blocks:
-            continue
-
-        seen_blocks.add(text)
-
-        lines = [
-            clean(x)
-            for x in re.split(r"[•\n\.]", text)
-            if clean(x)
-        ]
-
-        result["blocks"].append({
-            "tag": tag.name,
-            "text": text[:300],
-            "lines": lines[:20]
-        })
+    # GLOBAL DEDUPE
+    for k in result["global_fields"]:
+        result["global_fields"][k] = list(set(result["global_fields"][k]))
 
     return result
 
-# =========================
-# SEARCH FUNCTION
-# =========================
 
+# =========================
+# SEARCH ROUTE (TELETHON FLOW)
+# =========================
 @app.post("/search")
 async def search(data: Query):
 
@@ -272,6 +272,7 @@ async def search(data: Query):
             "size": os.path.getsize(file_path)
         }
 
+        # HTML PARSE
         if file_name.endswith(".html"):
 
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -284,10 +285,10 @@ async def search(data: Query):
     except Exception as e:
         return {"status": False, "error": str(e)}
 
-# =========================
-# TEST
-# =========================
 
+# =========================
+# TEST ROUTE
+# =========================
 @app.get("/test")
 async def test(q: str):
     return await search(Query(message=q))
