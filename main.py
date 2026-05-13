@@ -1,11 +1,16 @@
 import os
 import asyncio
-from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from bs4 import BeautifulSoup
+
+# =========================
+# LOAD ENV
+# =========================
 
 load_dotenv()
 
@@ -15,7 +20,15 @@ SESSION = os.getenv("SESSION")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
+# =========================
+# FASTAPI
+# =========================
+
 app = FastAPI()
+
+# =========================
+# TELEGRAM CLIENT
+# =========================
 
 client = TelegramClient(
     StringSession(SESSION),
@@ -23,77 +36,123 @@ client = TelegramClient(
     API_HASH
 )
 
+# =========================
+# DOWNLOAD FOLDER
+# =========================
+
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+# =========================
+# REQUEST MODEL
+# =========================
 
 class Query(BaseModel):
     message: str
 
+# =========================
+# STARTUP
+# =========================
 
 @app.on_event("startup")
 async def startup():
     await client.start()
-    print("Telegram client started")
+    print("Telegram Client Started")
 
+# =========================
+# SHUTDOWN
+# =========================
 
 @app.on_event("shutdown")
 async def shutdown():
     await client.disconnect()
 
+# =========================
+# HOME PAGE
+# =========================
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def home():
-    return {
-        "status": True,
-        "message": "Telegram Download API Running"
-    }
+    return """
+    <html>
+        <head>
+            <title>Telegram Search API</title>
+        </head>
 
+        <body style="font-family: Arial; padding: 40px;">
+            <h2>Telegram Search API</h2>
+
+            <form action="/test" method="get">
+
+                <input
+                    type="text"
+                    name="q"
+                    placeholder="Enter query"
+                    style="width:300px;height:40px;padding:10px;"
+                >
+
+                <button
+                    type="submit"
+                    style="height:40px;"
+                >
+                    Search
+                </button>
+
+            </form>
+        </body>
+    </html>
+    """
+
+# =========================
+# MAIN SEARCH FUNCTION
+# =========================
 
 @app.post("/search")
-async def search(data: Query)
-@app.get("/test")
-async def test(q: str):
-    return await search(Query(message=q))    
+async def search(data: Query):
+
     try:
-        # Send message to bot
+
+        # SEND MESSAGE
         sent_message = await client.send_message(
             BOT_USERNAME,
             data.message
         )
 
-        # Wait for bot response
+        # WAIT FOR BOT REPLY
         await asyncio.sleep(3)
 
-        bot_messages = await client.get_messages(
+        messages = await client.get_messages(
             BOT_USERNAME,
             limit=1
         )
 
-        if not bot_messages:
+        if not messages:
             return {
                 "status": False,
                 "error": "No response from bot"
             }
 
-        reply_message = bot_messages[0]
+        reply_message = messages[0]
 
-        # Click download button
+        # CLICK DOWNLOAD BUTTON
         try:
             await reply_message.click(text=DOWNLOAD_BUTTON)
+
         except Exception:
             try:
                 await reply_message.click(0)
+
             except Exception as e:
                 return {
                     "status": False,
                     "error": f"Button click failed: {str(e)}"
                 }
 
-        # Wait for file
+        # WAIT FOR FILE
         file_message = None
 
         for _ in range(15):
+
             await asyncio.sleep(1)
 
             latest = await client.get_messages(
@@ -111,7 +170,7 @@ async def test(q: str):
                 "error": "No file received"
             }
 
-        # Download file
+        # DOWNLOAD FILE
         file_path = await client.download_media(
             file_message,
             file=DOWNLOAD_DIR
@@ -119,7 +178,7 @@ async def test(q: str):
 
         file_name = os.path.basename(file_path)
 
-        response_data = {
+        response = {
             "status": True,
             "query": data.message,
             "file_name": file_name,
@@ -127,20 +186,47 @@ async def test(q: str):
             "size": os.path.getsize(file_path)
         }
 
-        # Read HTML if html file
+        # READ HTML FILE
         if file_name.endswith(".html"):
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+
+            with open(
+                file_path,
+                "r",
+                encoding="utf-8",
+                errors="ignore"
+            ) as f:
+
                 html_content = f.read()
 
-            soup = BeautifulSoup(html_content, "html.parser")
+            soup = BeautifulSoup(
+                html_content,
+                "html.parser"
+            )
 
-            response_data["title"] = soup.title.string if soup.title else None
-            response_data["html_preview"] = html_content[:2000]
+            response["title"] = (
+                soup.title.string
+                if soup.title
+                else None
+            )
 
-        return response_data
+            response["html_preview"] = html_content[:3000]
+
+        return response
 
     except Exception as e:
+
         return {
             "status": False,
             "error": str(e)
         }
+
+# =========================
+# BROWSER SEARCH
+# =========================
+
+@app.get("/test")
+async def test(q: str):
+
+    return await search(
+        Query(message=q)
+    )
