@@ -11,8 +11,6 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from bs4 import BeautifulSoup
-
 # =========================
 # LOAD ENV
 # =========================
@@ -27,14 +25,10 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
 # =========================
-# FASTAPI
+# APP
 # =========================
 
 app = FastAPI()
-
-# =========================
-# TELEGRAM CLIENT
-# =========================
 
 client = TelegramClient(
     StringSession(SESSION),
@@ -42,15 +36,11 @@ client = TelegramClient(
     API_HASH
 )
 
-# =========================
-# DOWNLOAD DIR
-# =========================
-
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # =========================
-# REQUEST MODEL
+# MODEL
 # =========================
 
 class Query(BaseModel):
@@ -70,27 +60,25 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# HOME PAGE
+# HOME
 # =========================
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
     <html>
-        <head><title>Parser API</title></head>
-        <body style="font-family:Arial;padding:40px;">
-            <h2>Universal HTML Parser API</h2>
+        <body style="font-family:Arial;padding:30px;">
+            <h2>Parser API</h2>
             <form action="/test" method="get">
-                <input name="q" placeholder="Enter query"
-                    style="width:300px;height:40px;padding:10px;">
-                <button type="submit">Search</button>
+                <input name="q" style="width:300px;height:40px">
+                <button>Search</button>
             </form>
         </body>
     </html>
     """
 
 # =========================
-# CLEAN HELPERS
+# HELPERS
 # =========================
 
 def clean_text(t):
@@ -98,114 +86,112 @@ def clean_text(t):
         return ""
     return re.sub(r"\s+", " ", t).strip()
 
-def unique_list(lst):
-    seen = set()
-    out = []
-    for x in lst:
-        x = clean_text(x)
-        if x and x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
-
 # =========================
-# 🔥 CLEAN HTML PARSER (FIXED)
+# 🔥 PAGINATION SCRAPER
 # =========================
 
-def parse_html_universal(html):
-    soup = BeautifulSoup(html, "html.parser")
+class TelegramPaginator:
 
-    result = {
-        "title": clean_text(soup.title.get_text() if soup.title else ""),
-        "navigation": [],
-        "sections": [],
-        "global_fields": {
-            "emails": [],
-            "phones": [],
-            "addresses": [],
-            "names": [],
-            "documents": [],
-            "regions": []
-        }
+    def __init__(self, client, bot_username, max_pages=30, delay=1.5):
+        self.client = client
+        self.bot = bot_username
+        self.max_pages = max_pages
+        self.delay = delay
+
+    async def start_msg(self):
+        await asyncio.sleep(2)
+        msgs = await self.client.get_messages(self.bot, limit=1)
+        return msgs[0] if msgs else None
+
+    def is_next(self, text):
+        if not text:
+            return False
+        t = text.lower()
+        return t in ["➡", ">", "next", "»"] or "next" in t
+
+    async def scrape(self):
+
+        msg = await self.start_msg()
+        if not msg:
+            return []
+
+        pages = []
+        seen = set()
+
+        for _ in range(self.max_pages):
+
+            text = msg.message or ""
+
+            if text in seen:
+                break
+
+            seen.add(text)
+            pages.append(text)
+
+            clicked = False
+
+            try:
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            if self.is_next(btn.text):
+                                await btn.click()
+                                clicked = True
+                                break
+                        if clicked:
+                            break
+            except:
+                break
+
+            if not clicked:
+                break
+
+            await asyncio.sleep(self.delay)
+
+            msgs = await client.get_messages(self.bot, ids=msg.id)
+            if msgs:
+                msg = msgs[0]
+            else:
+                break
+
+        return pages
+
+# =========================
+# 🔥 RAW TEXT → JSON PARSER (NO KEY MAP)
+# =========================
+
+def parse_bot_text(text: str):
+
+    lines = [clean_text(x) for x in text.split("\n") if clean_text(x)]
+
+    blocks = []
+    current = None
+
+    for line in lines:
+
+        # detect heading (emoji / title line)
+        if "📞" not in line and ":" not in line and len(line) < 80:
+            current = {
+                "heading": line,
+                "content": []
+            }
+            blocks.append(current)
+            continue
+
+        if current is None:
+            current = {
+                "heading": "UNKNOWN",
+                "content": []
+            }
+            blocks.append(current)
+
+        # store RAW LINE ONLY (no parsing, no filtering)
+        current["content"].append(line)
+
+    return {
+        "count": len(blocks),
+        "blocks": blocks
     }
-
-    # -------------------------
-    # NAVIGATION
-    # -------------------------
-    for a in soup.select(".nav a"):
-        result["navigation"].append({
-            "id": a.get("href", "").replace("#", ""),
-            "label": clean_text(a.get_text())
-        })
-
-    # -------------------------
-    # SECTIONS
-    # -------------------------
-    for block in soup.select("div.block"):
-
-        sec_id = block.get("id", "")
-        heading = clean_text(block.select_one(".block-title").get_text() if block.select_one(".block-title") else "")
-
-        section = {
-            "id": sec_id,
-            "heading": heading,
-            "description": "",
-            "content_blocks": []
-        }
-
-        text_tag = block.select_one(".block-text")
-
-        if text_tag:
-
-            full_text = clean_text(text_tag.get_text(" "))
-
-            # TEXT BLOCK
-            section["content_blocks"].append({
-                "type": "text",
-                "value": full_text
-            })
-
-            # FIELD GROUP (NO DUPLICATES FIXED)
-            fields = {}
-
-            for b in text_tag.find_all("b"):
-                key = clean_text(b.get_text()).replace(":", "")
-                if not key:
-                    continue
-
-                value = ""
-                code = b.find_next("code")
-
-                if code:
-                    value = clean_text(code.get_text())
-                elif b.next_sibling:
-                    value = clean_text(str(b.next_sibling))
-
-                if value:
-                    fields.setdefault(key, set()).add(value)
-
-            if fields:
-                section["content_blocks"].append({
-                    "type": "field_group",
-                    "fields": {k: list(v) for k, v in fields.items()}
-                })
-
-            # GLOBAL EXTRACTION
-            result["global_fields"]["phones"].extend(
-                re.findall(r"\b\d{10,15}\b", full_text)
-            )
-
-            result["global_fields"]["emails"].extend(
-                re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", full_text)
-            )
-
-        result["sections"].append(section)
-
-    # FINAL CLEANUP
-    for k in result["global_fields"]:
-        result["global_fields"][k] = unique_list(result["global_fields"][k])
-
-    return result
 
 # =========================
 # SEARCH API
@@ -215,62 +201,29 @@ def parse_html_universal(html):
 async def search(data: Query):
 
     try:
+
         await client.send_message(BOT_USERNAME, data.message)
 
-        await asyncio.sleep(3)
+        paginator = TelegramPaginator(client, BOT_USERNAME)
 
-        messages = await client.get_messages(BOT_USERNAME, limit=1)
+        pages = await paginator.scrape()
 
-        if not messages:
-            return {"status": False, "error": "No response"}
+        if not pages:
+            return {"status": False, "error": "No data"}
 
-        reply = messages[0]
+        full_text = "\n".join(pages)
 
-        try:
-            await reply.click(text=DOWNLOAD_BUTTON)
-        except:
-            await reply.click(0)
-
-        file_message = None
-
-        for _ in range(20):
-            await asyncio.sleep(1)
-            latest = await client.get_messages(BOT_USERNAME, limit=1)
-
-            if latest and latest[0].file:
-                file_message = latest[0]
-                break
-
-        if not file_message:
-            return {"status": False, "error": "No file"}
-
-        file_path = await client.download_media(
-            file_message,
-            file=DOWNLOAD_DIR
-        )
-
-        file_name = os.path.basename(file_path)
-
-        response = {
+        return {
             "status": True,
-            "query": data.message,
-            "file_name": file_name,
-            "size": os.path.getsize(file_path)
+            "pages": len(pages),
+            "parsed": parse_bot_text(full_text)
         }
-
-        if file_name.endswith(".html"):
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                html = f.read()
-
-            response["parsed"] = parse_html_universal(html)
-
-        return response
 
     except Exception as e:
         return {"status": False, "error": str(e)}
 
 # =========================
-# TEST ROUTE
+# TEST
 # =========================
 
 @app.get("/test")
