@@ -1,22 +1,22 @@
 import os
 import re
-import json
 import asyncio
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+
 from dotenv import load_dotenv
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from bs4 import BeautifulSoup
-from collections import defaultdict
 
 # =========================
 # LOAD ENV
 # =========================
+
 load_dotenv()
 
 API_ID = int(os.getenv("API_ID"))
@@ -29,11 +29,13 @@ DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 # =========================
 # FASTAPI
 # =========================
+
 app = FastAPI()
 
 # =========================
 # TELEGRAM CLIENT
 # =========================
+
 client = TelegramClient(
     StringSession(SESSION),
     API_ID,
@@ -43,67 +45,78 @@ client = TelegramClient(
 # =========================
 # DOWNLOAD DIR
 # =========================
+
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # =========================
 # REQUEST MODEL
 # =========================
+
 class Query(BaseModel):
     message: str
 
+# =========================
+# START / STOP
+# =========================
 
-# =========================
-# STARTUP / SHUTDOWN
-# =========================
 @app.on_event("startup")
 async def startup():
     await client.start()
     print("Telegram Client Started")
 
-
 @app.on_event("shutdown")
 async def shutdown():
     await client.disconnect()
 
+# =========================
+# HOME PAGE
+# =========================
 
-# =========================
-# HOME
-# =========================
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
     <html>
+        <head><title>Parser API</title></head>
         <body style="font-family:Arial;padding:40px;">
             <h2>Universal HTML Parser API</h2>
             <form action="/test" method="get">
-                <input name="q" style="width:300px;height:40px" placeholder="Enter query">
-                <button>Search</button>
+                <input name="q" placeholder="Enter query"
+                    style="width:300px;height:40px;padding:10px;">
+                <button type="submit">Search</button>
             </form>
         </body>
     </html>
     """
 
+# =========================
+# CLEAN HELPERS
+# =========================
 
-# =========================
-# CLEAN HELPER
-# =========================
-def clean_text(text):
-    if not text:
+def clean_text(t):
+    if not t:
         return ""
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return re.sub(r"\s+", " ", t).strip()
 
+def unique_list(lst):
+    seen = set()
+    out = []
+    for x in lst:
+        x = clean_text(x)
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 # =========================
-# UNIVERSAL CLEAN PARSER (FIXED)
+# 🔥 CLEAN HTML PARSER (FIXED)
 # =========================
+
 def parse_html_universal(html):
-
     soup = BeautifulSoup(html, "html.parser")
 
     result = {
-        "title": "",
+        "title": clean_text(soup.title.get_text() if soup.title else ""),
         "navigation": [],
         "sections": [],
         "global_fields": {
@@ -116,114 +129,88 @@ def parse_html_universal(html):
         }
     }
 
-    seen_texts = set()
-
-    # TITLE
-    if soup.title:
-        result["title"] = clean_text(soup.title.get_text())
-
+    # -------------------------
     # NAVIGATION
-    nav = soup.find("div", class_="nav")
-    if nav:
-        for a in nav.find_all("a"):
-            result["navigation"].append({
-                "id": a.get("href", "").replace("#", ""),
-                "label": clean_text(a.get_text())
-            })
+    # -------------------------
+    for a in soup.select(".nav a"):
+        result["navigation"].append({
+            "id": a.get("href", "").replace("#", ""),
+            "label": clean_text(a.get_text())
+        })
 
+    # -------------------------
     # SECTIONS
-    blocks = soup.find_all("div", class_="block")
+    # -------------------------
+    for block in soup.select("div.block"):
 
-    for block in blocks:
+        sec_id = block.get("id", "")
+        heading = clean_text(block.select_one(".block-title").get_text() if block.select_one(".block-title") else "")
 
         section = {
-            "id": block.get("id", ""),
-            "heading": "",
+            "id": sec_id,
+            "heading": heading,
             "description": "",
             "content_blocks": []
         }
 
-        # heading
-        h = block.find(class_="block-title")
-        if h:
-            section["heading"] = clean_text(h.get_text())
+        text_tag = block.select_one(".block-text")
 
-        # text block
-        text_block = block.find(class_="block-text")
+        if text_tag:
 
-        if text_block:
+            full_text = clean_text(text_tag.get_text(" "))
 
-            raw = clean_text(text_block.get_text(" "))
+            # TEXT BLOCK
+            section["content_blocks"].append({
+                "type": "text",
+                "value": full_text
+            })
 
-            if raw and raw not in seen_texts:
-                seen_texts.add(raw)
+            # FIELD GROUP (NO DUPLICATES FIXED)
+            fields = {}
 
-                section["content_blocks"].append({
-                    "type": "text",
-                    "value": raw
-                })
-
-        # field extraction
-        fields = defaultdict(list)
-
-        if text_block:
-
-            for b in text_block.find_all("b"):
-
-                key = clean_text(b.get_text().replace(":", ""))
+            for b in text_tag.find_all("b"):
+                key = clean_text(b.get_text()).replace(":", "")
+                if not key:
+                    continue
 
                 value = ""
-
                 code = b.find_next("code")
+
                 if code:
                     value = clean_text(code.get_text())
-                else:
-                    nxt = b.next_sibling
-                    if nxt:
-                        value = clean_text(str(nxt))
+                elif b.next_sibling:
+                    value = clean_text(str(b.next_sibling))
 
-                if key and value:
+                if value:
+                    fields.setdefault(key, set()).add(value)
 
-                    fields[key].append(value)
+            if fields:
+                section["content_blocks"].append({
+                    "type": "field_group",
+                    "fields": {k: list(v) for k, v in fields.items()}
+                })
 
-                    low = key.lower()
+            # GLOBAL EXTRACTION
+            result["global_fields"]["phones"].extend(
+                re.findall(r"\b\d{10,15}\b", full_text)
+            )
 
-                    if "email" in low:
-                        result["global_fields"]["emails"].append(value)
-
-                    elif "telephone" in low or "phone" in low:
-                        result["global_fields"]["phones"].append(value)
-
-                    elif "adres" in low or "address" in low:
-                        result["global_fields"]["addresses"].append(value)
-
-                    elif "name" in low:
-                        result["global_fields"]["names"].append(value)
-
-                    elif "document" in low or "passport" in low:
-                        result["global_fields"]["documents"].append(value)
-
-                    elif "region" in low:
-                        result["global_fields"]["regions"].append(value)
-
-        if fields:
-            section["content_blocks"].append({
-                "type": "field_group",
-                "fields": dict(fields)
-            })
+            result["global_fields"]["emails"].extend(
+                re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", full_text)
+            )
 
         result["sections"].append(section)
 
-    # GLOBAL DEDUPE
+    # FINAL CLEANUP
     for k in result["global_fields"]:
-        result["global_fields"][k] = list(set(result["global_fields"][k]))
+        result["global_fields"][k] = unique_list(result["global_fields"][k])
 
     return result
 
+# =========================
+# SEARCH API
+# =========================
 
-# =========================
-# SEARCH ROUTE (TELETHON FLOW)
-# =========================
 @app.post("/search")
 async def search(data: Query):
 
@@ -242,16 +229,12 @@ async def search(data: Query):
         try:
             await reply.click(text=DOWNLOAD_BUTTON)
         except:
-            try:
-                await reply.click(0)
-            except Exception as e:
-                return {"status": False, "error": str(e)}
+            await reply.click(0)
 
         file_message = None
 
         for _ in range(20):
             await asyncio.sleep(1)
-
             latest = await client.get_messages(BOT_USERNAME, limit=1)
 
             if latest and latest[0].file:
@@ -261,7 +244,10 @@ async def search(data: Query):
         if not file_message:
             return {"status": False, "error": "No file"}
 
-        file_path = await client.download_media(file_message, file=DOWNLOAD_DIR)
+        file_path = await client.download_media(
+            file_message,
+            file=DOWNLOAD_DIR
+        )
 
         file_name = os.path.basename(file_path)
 
@@ -272,23 +258,21 @@ async def search(data: Query):
             "size": os.path.getsize(file_path)
         }
 
-        # HTML PARSE
         if file_name.endswith(".html"):
-
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                html_content = f.read()
+                html = f.read()
 
-            response["parsed"] = parse_html_universal(html_content)
+            response["parsed"] = parse_html_universal(html)
 
         return response
 
     except Exception as e:
         return {"status": False, "error": str(e)}
 
-
 # =========================
 # TEST ROUTE
 # =========================
+
 @app.get("/test")
 async def test(q: str):
     return await search(Query(message=q))
