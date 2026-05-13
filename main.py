@@ -7,7 +7,6 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from dotenv import load_dotenv
-
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
@@ -42,13 +41,13 @@ class Query(BaseModel):
     message: str
 
 # =========================
-# STARTUP
+# START / STOP
 # =========================
 
 @app.on_event("startup")
 async def startup():
     await client.start()
-    print("Telegram Client Started")
+    print("✅ Telegram Client Started")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -63,7 +62,7 @@ async def home():
     return """
     <html>
         <body style="font-family:Arial;padding:30px;">
-            <h2>Parser API</h2>
+            <h2>PRO Scraper API</h2>
             <form action="/test" method="get">
                 <input name="q" style="width:300px;height:40px">
                 <button>Search</button>
@@ -73,7 +72,7 @@ async def home():
     """
 
 # =========================
-# CLEAN TEXT
+# CLEAN
 # =========================
 
 def clean_text(t):
@@ -82,31 +81,30 @@ def clean_text(t):
     return re.sub(r"\s+", " ", str(t)).strip()
 
 # =========================
-# PAGINATION SCRAPER (FIXED)
+# PRO PAGINATION SCRAPER
 # =========================
 
 class TelegramPaginator:
 
-    def __init__(self, client, bot_username, max_pages=30, delay=1.5):
+    def __init__(self, client, bot_username, max_pages=20, delay=1.2):
         self.client = client
         self.bot = bot_username
         self.max_pages = max_pages
         self.delay = delay
 
-    async def start_msg(self):
-        await asyncio.sleep(2)
+    async def get_latest_message(self):
         msgs = await self.client.get_messages(self.bot, limit=1)
         return msgs[0] if msgs else None
 
-    def is_next(self, text):
+    def is_next_button(self, text):
         if not text:
             return False
         t = text.lower()
-        return t in ["➡", ">", "next", "»"] or "next" in t
+        return t in ["➡", ">", "next", "»", "forward"] or "next" in t
 
     async def scrape(self):
 
-        msg = await self.start_msg()
+        msg = await self.get_latest_message()
         if not msg:
             return []
 
@@ -115,9 +113,9 @@ class TelegramPaginator:
 
         for _ in range(self.max_pages):
 
-            # ✅ FIX: correct access
             text = msg.message or ""
 
+            # prevent duplicate pages
             if msg.id in seen_ids:
                 break
 
@@ -126,11 +124,14 @@ class TelegramPaginator:
 
             clicked = False
 
+            # =========================
+            # BUTTON CLICK HANDLING
+            # =========================
             try:
                 if msg.buttons:
                     for row in msg.buttons:
                         for btn in row:
-                            if self.is_next(btn.text):
+                            if self.is_next_button(btn.text):
                                 await btn.click()
                                 clicked = True
                                 break
@@ -145,16 +146,20 @@ class TelegramPaginator:
 
             await asyncio.sleep(self.delay)
 
-            msgs = await self.client.get_messages(self.bot, ids=msg.id)
-            if msgs:
-                msg = msgs[0]
-            else:
+            # =========================
+            # SAFE MESSAGE REFRESH
+            # (IMPORTANT FIX)
+            # =========================
+            new_msg = await self.client.get_messages(self.bot, limit=1)
+            if not new_msg:
                 break
+
+            msg = new_msg[0]
 
         return pages
 
 # =========================
-# RAW TEXT → JSON (NO KEY MAP)
+# RAW TEXT → JSON
 # =========================
 
 def parse_bot_text(text: str):
@@ -166,8 +171,8 @@ def parse_bot_text(text: str):
 
     for line in lines:
 
-        # new block detection (simple heuristic)
-        if len(line) < 60 and ("📞" not in line) and (":" not in line):
+        # heading detection
+        if len(line) < 60 and "📞" not in line and ":" not in line:
             current = {
                 "heading": line,
                 "content": []
@@ -185,7 +190,7 @@ def parse_bot_text(text: str):
         current["content"].append(line)
 
     return {
-        "count": len(blocks),
+        "total_blocks": len(blocks),
         "blocks": blocks
     }
 
@@ -204,7 +209,10 @@ async def search(data: Query):
         pages = await paginator.scrape()
 
         if not pages:
-            return {"status": False, "error": "No data"}
+            return {
+                "status": False,
+                "error": "No data received"
+            }
 
         full_text = "\n".join(pages)
 
@@ -215,7 +223,10 @@ async def search(data: Query):
         }
 
     except Exception as e:
-        return {"status": False, "error": str(e)}
+        return {
+            "status": False,
+            "error": str(e)
+        }
 
 # =========================
 # TEST
