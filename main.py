@@ -113,12 +113,12 @@ async def search(data: Query):
     try:
 
         # SEND MESSAGE
-        sent_message = await client.send_message(
+        await client.send_message(
             BOT_USERNAME,
             data.message
         )
 
-        # WAIT FOR BOT REPLY
+        # WAIT BOT RESPONSE
         await asyncio.sleep(3)
 
         messages = await client.get_messages(
@@ -136,13 +136,17 @@ async def search(data: Query):
 
         # CLICK DOWNLOAD BUTTON
         try:
-            await reply_message.click(text=DOWNLOAD_BUTTON)
+            await reply_message.click(
+                text=DOWNLOAD_BUTTON
+            )
 
         except Exception:
+
             try:
                 await reply_message.click(0)
 
             except Exception as e:
+
                 return {
                     "status": False,
                     "error": f"Button click failed: {str(e)}"
@@ -182,117 +186,141 @@ async def search(data: Query):
             "status": True,
             "query": data.message,
             "file_name": file_name,
-            "path": file_path,
             "size": os.path.getsize(file_path)
         }
 
+        # =========================
         # READ HTML FILE
-if file_name.endswith(".html"):
+        # =========================
 
-    with open(
-        file_path,
-        "r",
-        encoding="utf-8",
-        errors="ignore"
-    ) as f:
+        if file_name.endswith(".html"):
 
-        html_content = f.read()
+            with open(
+                file_path,
+                "r",
+                encoding="utf-8",
+                errors="ignore"
+            ) as f:
 
-    soup = BeautifulSoup(
-        html_content,
-        "html.parser"
-    )
+                html_content = f.read()
 
-    blocks = soup.find_all(
-        "div",
-        class_="block"
-    )
+            soup = BeautifulSoup(
+                html_content,
+                "html.parser"
+            )
 
-    clean_results = []
+            # ALL BLOCKS
+            blocks = soup.find_all(
+                "div",
+                class_="block"
+            )
 
-    for block in blocks:
+            clean_results = []
 
-        # TITLE
-        title_tag = block.find(
-            "div",
-            class_="block-title"
-        )
+            for block in blocks:
 
-        source_name = (
-            title_tag.get_text(strip=True)
-            if title_tag else "Unknown"
-        )
+                # SOURCE NAME
+                title_tag = block.find(
+                    "div",
+                    class_="block-title"
+                )
 
-        # TEXT AREA
-        text_div = block.find(
-            "div",
-            class_="block-text"
-        )
+                source_name = (
+                    title_tag.get_text(strip=True)
+                    if title_tag else "Unknown"
+                )
 
-        if not text_div:
-            continue
+                # BLOCK TEXT
+                text_div = block.find(
+                    "div",
+                    class_="block-text"
+                )
 
-        # ALL <b> LABELS
-        labels = text_div.find_all("b")
+                if not text_div:
+                    continue
 
-        item = {
-            "source": source_name,
-            "data": []
+                # FIND ALL LABELS
+                labels = text_div.find_all("b")
+
+                parsed = {}
+
+                for label in labels:
+
+                    # CLEAN KEY
+                    key = label.get_text(
+                        strip=True
+                    ).replace(":", "")
+
+                    key = (
+                        key.replace("📞", "")
+                           .replace("📩", "")
+                           .replace("👤", "")
+                           .replace("🏘️", "")
+                           .replace("👨", "")
+                           .replace("🗺️", "")
+                           .replace("🎯", "")
+                           .replace("📆", "")
+                           .replace("🃏", "")
+                           .replace("🌃", "")
+                           .replace("🔑", "")
+                           .replace("🔐", "")
+                           .replace("💶", "")
+                           .replace("💸", "")
+                           .replace("🚻", "")
+                           .replace("🌐", "")
+                           .replace("🔎", "")
+                           .replace("🏢", "")
+                           .replace("🗾", "")
+                           .strip()
+                    )
+
+                    value = ""
+
+                    # NEXT VALUE
+                    next_node = label.next_sibling
+
+                    if next_node:
+                        value = str(next_node).strip()
+
+                    # CLEAN VALUE
+                    value = (
+                        value.replace("<br/>", "")
+                             .replace("<br>", "")
+                             .replace("\n", " ")
+                             .strip()
+                    )
+
+                    # MULTIPLE VALUES SUPPORT
+                    if key in parsed:
+
+                        if isinstance(parsed[key], list):
+                            parsed[key].append(value)
+
+                        else:
+                            parsed[key] = [
+                                parsed[key],
+                                value
+                            ]
+
+                    else:
+                        parsed[key] = value
+
+                clean_results.append({
+                    "source": source_name,
+                    "data": parsed
+                })
+
+            # FINAL JSON
+            response["results"] = clean_results
+
+        return response
+
+    except Exception as e:
+
+        return {
+            "status": False,
+            "error": str(e)
         }
-
-        current_record = {}
-
-        for label in labels:
-
-            key = label.get_text(
-                strip=True
-            ).replace(":", "")
-
-            value = ""
-
-            # NEXT TEXT
-            next_node = label.next_sibling
-
-            if next_node:
-                value = str(next_node).strip()
-
-            # CLEAN VALUE
-            value = (
-                value
-                .replace("<br/>", "")
-                .replace("<br>", "")
-                .strip()
-            )
-
-            # REMOVE EMOJIS IN KEY
-            key = (
-                key.replace("📞", "")
-                   .replace("📩", "")
-                   .replace("👤", "")
-                   .replace("🏘️", "")
-                   .replace("👨", "")
-                   .replace("🗺️", "")
-                   .replace("🎯", "")
-                   .replace("📆", "")
-                   .replace("🃏", "")
-                   .replace("🌃", "")
-                   .replace("🔑", "")
-                   .replace("🔐", "")
-                   .strip()
-            )
-
-            current_record[key] = value
-
-        item["data"].append(
-            current_record
-        )
-
-        clean_results.append(item)
-
-    response["results"] = clean_results
-
-    # OPTIONAL REMOVE HTML PREVIEW
-    response.pop("html_preview", None)
 
 # =========================
 # BROWSER SEARCH
