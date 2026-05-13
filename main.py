@@ -12,7 +12,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 # =========================
-# LOAD ENV
+# ENV
 # =========================
 
 load_dotenv()
@@ -21,8 +21,6 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
-
-DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
 # =========================
 # APP
@@ -36,9 +34,6 @@ client = TelegramClient(
     API_HASH
 )
 
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
 # =========================
 # MODEL
 # =========================
@@ -47,7 +42,7 @@ class Query(BaseModel):
     message: str
 
 # =========================
-# START / STOP
+# STARTUP
 # =========================
 
 @app.on_event("startup")
@@ -78,16 +73,16 @@ async def home():
     """
 
 # =========================
-# HELPERS
+# CLEAN TEXT
 # =========================
 
 def clean_text(t):
     if not t:
         return ""
-    return re.sub(r"\s+", " ", t).strip()
+    return re.sub(r"\s+", " ", str(t)).strip()
 
 # =========================
-# 🔥 PAGINATION SCRAPER
+# PAGINATION SCRAPER (FIXED)
 # =========================
 
 class TelegramPaginator:
@@ -116,16 +111,17 @@ class TelegramPaginator:
             return []
 
         pages = []
-        seen = set()
+        seen_ids = set()
 
         for _ in range(self.max_pages):
 
+            # ✅ FIX: correct access
             text = msg.message or ""
 
-            if text in seen:
+            if msg.id in seen_ids:
                 break
 
-            seen.add(text)
+            seen_ids.add(msg.id)
             pages.append(text)
 
             clicked = False
@@ -140,7 +136,8 @@ class TelegramPaginator:
                                 break
                         if clicked:
                             break
-            except:
+            except Exception as e:
+                print("Button error:", e)
                 break
 
             if not clicked:
@@ -148,7 +145,7 @@ class TelegramPaginator:
 
             await asyncio.sleep(self.delay)
 
-            msgs = await client.get_messages(self.bot, ids=msg.id)
+            msgs = await self.client.get_messages(self.bot, ids=msg.id)
             if msgs:
                 msg = msgs[0]
             else:
@@ -157,7 +154,7 @@ class TelegramPaginator:
         return pages
 
 # =========================
-# 🔥 RAW TEXT → JSON PARSER (NO KEY MAP)
+# RAW TEXT → JSON (NO KEY MAP)
 # =========================
 
 def parse_bot_text(text: str):
@@ -169,8 +166,8 @@ def parse_bot_text(text: str):
 
     for line in lines:
 
-        # detect heading (emoji / title line)
-        if "📞" not in line and ":" not in line and len(line) < 80:
+        # new block detection (simple heuristic)
+        if len(line) < 60 and ("📞" not in line) and (":" not in line):
             current = {
                 "heading": line,
                 "content": []
@@ -185,7 +182,6 @@ def parse_bot_text(text: str):
             }
             blocks.append(current)
 
-        # store RAW LINE ONLY (no parsing, no filtering)
         current["content"].append(line)
 
     return {
@@ -194,14 +190,13 @@ def parse_bot_text(text: str):
     }
 
 # =========================
-# SEARCH API
+# API
 # =========================
 
 @app.post("/search")
 async def search(data: Query):
 
     try:
-
         await client.send_message(BOT_USERNAME, data.message)
 
         paginator = TelegramPaginator(client, BOT_USERNAME)
