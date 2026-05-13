@@ -44,130 +44,113 @@ class Query(BaseModel):
     message: str
 
 # =========================
-# CLEAN TEXT SPLITTER
+# STARTUP / SHUTDOWN
 # =========================
 
-def clean(text):
-    return re.sub(r"\s+", " ", text).strip()
+@app.on_event("startup")
+async def startup():
+    await client.start()
+    print("Telegram Client Started")
 
-def split_text(text):
+@app.on_event("shutdown")
+async def shutdown():
+    await client.disconnect()
+
+# =========================
+# HOME PAGE
+# =========================
+
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return """
+    <html>
+        <body style="font-family:Arial;padding:40px;">
+            <h2>HTML Parser API</h2>
+            <form action="/test" method="get">
+                <input name="q" style="width:300px;height:40px;" placeholder="Enter query">
+                <button>Search</button>
+            </form>
+        </body>
+    </html>
     """
-    Convert long paragraph into structured chunks
-    """
-    text = clean(text)
-
-    if len(text) < 80:
-        return [text] if text else []
-
-    # split by sentence boundaries
-    parts = re.split(r"(?<=[.!?])\s+", text)
-
-    return [clean(p) for p in parts if len(p.strip()) > 2]
 
 # =========================
-# NEW JSON NODE PARSER
-# =========================
-
-def parse_node(element):
-
-    if not hasattr(element, "name"):
-        return None
-
-    node = {
-        "tag": element.name,
-        "attributes": {
-            "id": element.get("id"),
-            "class": element.get("class"),
-            "href": element.get("href"),
-            "src": element.get("src")
-        },
-        "content": [],
-        "children": []
-    }
-
-    # ================= TEXT AS CLEAN CHUNKS =================
-    raw_text = element.get_text(" ", strip=True)
-    chunks = split_text(raw_text)
-
-    if chunks:
-        node["content"] = chunks
-
-    # ================= CHILDREN =================
-    seen = set()
-
-    for child in element.children:
-
-        if not hasattr(child, "name"):
-            continue
-
-        key = (child.name, child.get("id"))
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-
-        child_node = parse_node(child)
-
-        if child_node:
-            node["children"].append(child_node)
-
-    # remove empty noise
-    if not node["content"]:
-        node.pop("content")
-
-    if not node["children"]:
-        node.pop("children")
-
-    return node
-
-# =========================
-# MAIN PARSER WRAPPER
+# CLEAN HTML PARSER (NO DUPLICATION FIX)
 # =========================
 
 def parse_html_ai(html):
-
     soup = BeautifulSoup(html, "html.parser")
+
+    def clean(text):
+        return re.sub(r"\s+", " ", text).strip()
 
     result = {
         "title": clean(soup.title.get_text()) if soup.title else None,
         "meta": {},
-        "structure": []
+        "sections": []
     }
 
-    # META
+    # ================= META =================
     for meta in soup.find_all("meta"):
         key = meta.get("name") or meta.get("property") or meta.get("charset")
         val = meta.get("content") or meta.get("charset")
-
         if key and val:
             result["meta"][key] = val
 
-    root = soup.body if soup.body else soup
-
+    # ================= FIXED BLOCK EXTRACTION =================
     seen = set()
 
-    for child in root.children:
+    blocks = soup.body.find_all(["div", "section", "article"], recursive=False) if soup.body else []
 
-        if not hasattr(child, "name"):
+    # fallback if body empty
+    if not blocks:
+        blocks = soup.find_all(["div", "section", "article"], recursive=False)
+
+    for block in blocks:
+
+        text = clean(block.get_text(" "))
+
+        if not text or len(text) < 3:
             continue
 
-        key = (child.name, child.get("id"))
+        key = (text[:120], block.get("id"))
 
         if key in seen:
             continue
 
         seen.add(key)
 
-        node = parse_node(child)
+        item = {
+            "tag": block.name,
+            "text": text,
+            "attributes": {
+                "id": block.get("id"),
+                "class": block.get("class")
+            }
+        }
 
-        if node:
-            result["structure"].append(node)
+        # ================= LINKS INSIDE BLOCK =================
+        links = []
+
+        for a in block.find_all("a"):
+            href = a.get("href")
+            link_text = clean(a.get_text())
+
+            if href and link_text:
+                links.append({
+                    "text": link_text,
+                    "href": href
+                })
+
+        if links:
+            item["links"] = links
+
+        result["sections"].append(item)
 
     return result
 
 # =========================
-# FASTAPI (same flow as before)
+# TELEGRAM SEARCH FLOW
 # =========================
 
 @app.post("/search")
@@ -206,7 +189,11 @@ async def search(data: Query):
         if not file_message:
             return {"status": False, "error": "No file received"}
 
-        file_path = await client.download_media(file_message, file=DOWNLOAD_DIR)
+        file_path = await client.download_media(
+            file_message,
+            file=DOWNLOAD_DIR
+        )
+
         file_name = os.path.basename(file_path)
 
         response = {
@@ -215,6 +202,7 @@ async def search(data: Query):
             "file_name": file_name
         }
 
+        # ================= HTML PARSE =================
         if file_name.endswith(".html"):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 html = f.read()
@@ -226,20 +214,10 @@ async def search(data: Query):
     except Exception as e:
         return {"status": False, "error": str(e)}
 
+# =========================
+# TEST ROUTE
+# =========================
+
 @app.get("/test")
 async def test(q: str):
     return await search(Query(message=q))
-
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <html>
-        <body style="font-family:Arial;padding:40px;">
-            <h2>Clean JSON HTML Parser</h2>
-            <form action="/test" method="get">
-                <input name="q" style="width:300px;height:40px;">
-                <button>Search</button>
-            </form>
-        </body>
-    </html>
-    """
