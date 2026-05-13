@@ -15,22 +15,10 @@ from telethon.sessions import StringSession
 
 load_dotenv()
 
-APIID = os.getenv("APIID")
-if not APIID:
-    raise ValueError("APIID not found in .env file")
-APIID = int(APIID)
-
+APIID = int(os.getenv("APIID"))
 APIHASH = os.getenv("APIHASH")
-if not APIHASH:
-    raise ValueError("APIHASH not found in .env file")
-
 SESSION = os.getenv("SESSION")
-if not SESSION:
-    raise ValueError("SESSION not found in .env file")
-
 BOTUSERNAME = os.getenv("BOTUSERNAME")
-if not BOTUSERNAME:
-    raise ValueError("BOTUSERNAME not found in .env file")
 
 # =========================
 # APP
@@ -103,7 +91,8 @@ class TelegramPaginator:
                 # wait bot response
                 msg = await conv.get_response()
 
-                text = msg.text or msg.message or ""
+                # ✅ raw_text is safest
+                text = msg.raw_text or ""
                 pages.append(text)
 
                 clicked = False
