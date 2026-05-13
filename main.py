@@ -14,7 +14,7 @@ from telethon.sessions import StringSession
 from bs4 import BeautifulSoup
 
 # =========================
-# LOAD ENV
+# ENV
 # =========================
 
 load_dotenv()
@@ -26,14 +26,10 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
 # =========================
-# APP INIT
+# APP
 # =========================
 
 app = FastAPI()
-
-# =========================
-# TELEGRAM CLIENT
-# =========================
 
 client = TelegramClient(
     StringSession(SESSION),
@@ -41,16 +37,8 @@ client = TelegramClient(
     API_HASH
 )
 
-# =========================
-# DOWNLOAD DIR
-# =========================
-
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-# =========================
-# REQUEST MODEL
-# =========================
 
 class Query(BaseModel):
     message: str
@@ -77,7 +65,7 @@ async def home():
     return """
     <html>
         <body style="font-family:Arial;padding:40px;">
-            <h2>AI HTML Extractor API</h2>
+            <h2>HTML Structure Parser API</h2>
             <form action="/test" method="get">
                 <input name="q" style="width:300px;height:40px;" placeholder="Enter query">
                 <button>Search</button>
@@ -87,7 +75,7 @@ async def home():
     """
 
 # =========================
-# CLEAN AI HTML PARSER
+# STRUCTURE PARSER (NO DATA LOSS VERSION)
 # =========================
 
 def parse_html_ai(html):
@@ -96,137 +84,62 @@ def parse_html_ai(html):
     def clean(text):
         return re.sub(r"\s+", " ", text).strip()
 
-    def valid(text):
-        return text and len(text) > 3
-
-    def is_noise(tag):
-        bad = ["nav", "footer", "header", "menu", "sidebar", "ads", "advert", "cookie"]
-        cls = " ".join(tag.get("class", [])).lower() if tag.get("class") else ""
-        tid = tag.get("id", "").lower()
-        return any(x in cls or x in tid for x in bad)
-
-    # remove junk
-    for t in soup(["script", "style", "noscript"]):
-        t.decompose()
-
     result = {
         "title": clean(soup.title.get_text()) if soup.title else None,
         "meta": {},
-        "content": [],
-        "links": [],
-        "images": [],
-        "tables": [],
-        "lists": [],
-        "code": []
+        "structure": []
     }
 
     # ================= META =================
     for meta in soup.find_all("meta"):
-        k = meta.get("name") or meta.get("property")
-        v = meta.get("content")
-        if k and v:
-            result["meta"][k] = v
+        key = meta.get("name") or meta.get("property") or meta.get("charset")
+        val = meta.get("content") or meta.get("charset")
 
-    # ================= LINKS =================
-    seen_links = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        text = clean(a.get_text())
+        if key and val:
+            result["meta"][key] = val
 
-        if href not in seen_links and valid(text):
-            seen_links.add(href)
-            result["links"].append({
+    # ================= STRUCTURE WALK =================
+    seen = set()
+
+    root = soup.body if soup.body else soup
+
+    for tag in root.descendants:
+
+        if not hasattr(tag, "name"):
+            continue
+
+        if tag.name in [
+            "h1","h2","h3","h4","h5","h6",
+            "p","span","div","li","a","img"
+        ]:
+
+            text = clean(tag.get_text())
+
+            if not text:
+                continue
+
+            # ONLY prevent parser duplication (NOT HTML duplication)
+            key = (
+                tag.name,
+                text,
+                tag.parent.name if tag.parent else ""
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            result["structure"].append({
+                "tag": tag.name,
                 "text": text,
-                "url": href
+                "attributes": {
+                    "id": tag.get("id"),
+                    "class": tag.get("class"),
+                    "href": tag.get("href"),
+                    "src": tag.get("src")
+                }
             })
-
-    # ================= IMAGES =================
-    seen_img = set()
-    for img in soup.find_all("img", src=True):
-        src = img["src"]
-
-        if src not in seen_img:
-            seen_img.add(src)
-            result["images"].append({
-                "url": src,
-                "alt": img.get("alt", "")
-            })
-
-    # ================= TABLES =================
-    for table in soup.find_all("table"):
-        rows = []
-        for tr in table.find_all("tr"):
-            cols = [clean(td.get_text()) for td in tr.find_all(["td", "th"])]
-            if cols:
-                rows.append(cols)
-        if rows:
-            result["tables"].append(rows)
-
-    # ================= LISTS =================
-    for ul in soup.find_all(["ul", "ol"]):
-        items = []
-        for li in ul.find_all("li"):
-            txt = clean(li.get_text())
-            if valid(txt):
-                items.append(txt)
-        if items:
-            result["lists"].append(items)
-
-    # ================= CODE =================
-    seen_code = set()
-    for code in soup.find_all(["pre", "code"]):
-        txt = clean(code.get_text())
-        if valid(txt) and txt not in seen_code:
-            seen_code.add(txt)
-            result["code"].append(txt)
-
-    # ================= MAIN ARTICLE EXTRACTION =================
-    candidates = soup.find_all(["article", "main", "div", "section"])
-    best_block = None
-    best_score = 0
-
-    for block in candidates:
-        if is_noise(block):
-            continue
-
-        text = clean(block.get_text(" "))
-        score = len(text)
-
-        if score > best_score:
-            best_score = score
-            best_block = block
-
-    if not best_block:
-        best_block = soup.body or soup
-
-    seen_text = set()
-
-    for tag in best_block.find_all(["h1", "h2", "h3", "h4", "p"]):
-        text = clean(tag.get_text())
-
-        if not valid(text):
-            continue
-
-        if text in seen_text:
-            continue
-
-        seen_text.add(text)
-
-        if tag.name.startswith("h"):
-            result["content"].append({
-                "type": "heading",
-                "level": tag.name,
-                "text": text,
-                "children": []
-            })
-        else:
-            if result["content"] and result["content"][-1]["type"] == "heading":
-                result["content"][-1]["children"].append(text)
-            else:
-                result["content"].append({
-                    "type": "paragraph",
-                    "text": text
-                })
 
     return result
 
@@ -258,7 +171,6 @@ async def search(data: Query):
             except Exception as e:
                 return {"status": False, "error": str(e)}
 
-        # wait file
         file_message = None
 
         for _ in range(20):
@@ -286,7 +198,7 @@ async def search(data: Query):
             "file_name": file_name
         }
 
-        # parse HTML if exists
+        # ================= HTML PARSE =================
         if file_name.endswith(".html"):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 html = f.read()
