@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from telethon import TelegramClient, events
+from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 # =========================
@@ -15,10 +15,16 @@ from telethon.sessions import StringSession
 
 load_dotenv()
 
-APIID = int(os.getenv("APIID"))
+# Safe load with error if missing
+APIID = os.getenv("APIID")
 APIHASH = os.getenv("APIHASH")
 SESSION = os.getenv("SESSION")
 BOTUSERNAME = os.getenv("BOTUSERNAME")
+
+if not APIID or not APIHASH or not SESSION or not BOTUSERNAME:
+    raise RuntimeError("Missing one or more required environment variables: APIID, APIHASH, SESSION, BOTUSERNAME")
+
+APIID = int(APIID)
 
 # =========================
 # APP
@@ -90,9 +96,8 @@ class TelegramPaginator:
                     print("No response:", e)
                     break
 
-                # ✅ safest way
                 text = msg.raw_text or ""
-                print(f"DEBUG PAGE {i+1}:\n{text}\n")   # console debug
+                print(f"DEBUG PAGE {i+1}:\n{text}\n")
                 pages.append(text)
 
                 clicked = False
@@ -132,7 +137,6 @@ def parsebottext(text: str):
             key = key.strip()
             val = val.strip()
 
-            # handle duplicate keys like Telephone / Adres
             if key in current:
                 if key.lower().startswith("telephone"):
                     key = f"Telephone_{tel_count}"
@@ -145,7 +149,6 @@ def parsebottext(text: str):
 
             current[key] = val
         else:
-            # new record trigger
             if current:
                 records.append(current)
                 current = {}
