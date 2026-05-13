@@ -51,7 +51,10 @@ async def home():
 
 
 @app.post("/search")
-async def search(data: Query):
+async def search(data: Query)
+@app.get("/test")
+async def test(q: str):
+    return await search(Query(message=q))    
     try:
         # Send message to bot
         sent_message = await client.send_message(
