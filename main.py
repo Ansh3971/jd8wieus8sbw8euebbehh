@@ -187,38 +187,112 @@ async def search(data: Query):
         }
 
         # READ HTML FILE
-        if file_name.endswith(".html"):
+if file_name.endswith(".html"):
 
-            with open(
-                file_path,
-                "r",
-                encoding="utf-8",
-                errors="ignore"
-            ) as f:
+    with open(
+        file_path,
+        "r",
+        encoding="utf-8",
+        errors="ignore"
+    ) as f:
 
-                html_content = f.read()
+        html_content = f.read()
 
-            soup = BeautifulSoup(
-                html_content,
-                "html.parser"
-            )
+    soup = BeautifulSoup(
+        html_content,
+        "html.parser"
+    )
 
-            response["title"] = (
-                soup.title.string
-                if soup.title
-                else None
-            )
+    blocks = soup.find_all(
+        "div",
+        class_="block"
+    )
 
-            response["html_preview"] = html_content[:3000]
+    clean_results = []
 
-        return response
+    for block in blocks:
 
-    except Exception as e:
+        # TITLE
+        title_tag = block.find(
+            "div",
+            class_="block-title"
+        )
 
-        return {
-            "status": False,
-            "error": str(e)
+        source_name = (
+            title_tag.get_text(strip=True)
+            if title_tag else "Unknown"
+        )
+
+        # TEXT AREA
+        text_div = block.find(
+            "div",
+            class_="block-text"
+        )
+
+        if not text_div:
+            continue
+
+        # ALL <b> LABELS
+        labels = text_div.find_all("b")
+
+        item = {
+            "source": source_name,
+            "data": []
         }
+
+        current_record = {}
+
+        for label in labels:
+
+            key = label.get_text(
+                strip=True
+            ).replace(":", "")
+
+            value = ""
+
+            # NEXT TEXT
+            next_node = label.next_sibling
+
+            if next_node:
+                value = str(next_node).strip()
+
+            # CLEAN VALUE
+            value = (
+                value
+                .replace("<br/>", "")
+                .replace("<br>", "")
+                .strip()
+            )
+
+            # REMOVE EMOJIS IN KEY
+            key = (
+                key.replace("📞", "")
+                   .replace("📩", "")
+                   .replace("👤", "")
+                   .replace("🏘️", "")
+                   .replace("👨", "")
+                   .replace("🗺️", "")
+                   .replace("🎯", "")
+                   .replace("📆", "")
+                   .replace("🃏", "")
+                   .replace("🌃", "")
+                   .replace("🔑", "")
+                   .replace("🔐", "")
+                   .strip()
+            )
+
+            current_record[key] = value
+
+        item["data"].append(
+            current_record
+        )
+
+        clean_results.append(item)
+
+    response["results"] = clean_results
+
+    # OPTIONAL REMOVE HTML PREVIEW
+    response.pop("html_preview", None)
 
 # =========================
 # BROWSER SEARCH
