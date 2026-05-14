@@ -280,47 +280,78 @@ async def find_next_button(message):
     return None
 
 # =========================
-# CLICK NEXT BUTTON
+# CLICK NEXT BUTTON - DUAL DETECTION
 # =========================
 
-async def click_next_button(message, retries=3):
+async def click_next_button(message, current_page_num, timeout=5):
+    """Click next button and return updated message (either edited same ID or new message)"""
     if not message.reply_markup:
         print("No reply_markup on message")
         return None
     
-    for attempt in range(retries):
-        try:
-            next_button_info = await find_next_button(message)
-            if not next_button_info:
-                print(f"Next button not found (attempt {attempt + 1})")
-                await asyncio.sleep(0.3)
+    next_button_info = await find_next_button(message)
+    if not next_button_info:
+        print("Next button not found")
+        return None
+    
+    button, row_idx, col_idx = next_button_info
+    button_text = button.text
+    print(f"Clicking next button: '{button_text}'")
+    
+    # Store current page number for comparison
+    old_page, total_pages = get_page_numbers(message.message)
+    print(f"Current page: {old_page}/{total_pages}")
+    
+    # Click the button
+    await message.click(text=button_text)
+    
+    # Wait for bot to respond (increase to 1.5 seconds)
+    await asyncio.sleep(1.5)
+    
+    # FIRST CHECK: Did the original message get edited?
+    try:
+        edited_message = await client.get_messages(BOT_USERNAME, ids=message.id)
+        if edited_message and edited_message.message != message.message:
+            print("Message was edited (same ID)")
+            new_page, _ = get_page_numbers(edited_message.message)
+            print(f"New page after edit: {new_page}/{total_pages}")
+            return edited_message
+    except Exception as e:
+        print(f"Error checking edited message: {e}")
+    
+    # SECOND CHECK: Did the bot send a new message?
+    try:
+        # Get messages after the click
+        messages = await client.get_messages(BOT_USERNAME, limit=5)
+        for msg in messages:
+            if msg.out:
+                continue
+            if not msg.message:
+                continue
+            if msg.id <= message.id:
                 continue
             
-            button, row_idx, col_idx = next_button_info
-            button_text = button.text
-            print(f"Found next button: '{button_text}'")
-            
-            old_content = message.message
-            
-            await message.click(text=button_text)
-            await asyncio.sleep(0.8)
-            
-            updated_message = await client.get_messages(
-                BOT_USERNAME,
-                ids=message.id
-            )
-            
-            if updated_message and updated_message.message != old_content:
-                print(f"Page changed successfully")
-                return updated_message
-            else:
-                print(f"Content didn't change (attempt {attempt + 1})")
-                await asyncio.sleep(0.5)
-                
-        except Exception as e:
-            print(f"Error clicking next button (attempt {attempt + 1}): {e}")
-            await asyncio.sleep(0.5)
+            # Check if this message contains data for same query
+            has_data_emojis = re.search(r'[📩📞🏘️🃏👤👨🗺️💾🎲🚗]', msg.message)
+            if has_data_emojis or len(msg.message) > 200:
+                print(f"Found new message (ID: {msg.id})")
+                new_page, _ = get_page_numbers(msg.message)
+                print(f"New page: {new_page}/{total_pages}")
+                return msg
+    except Exception as e:
+        print(f"Error checking new messages: {e}")
     
+    # THIRD CHECK: Wait longer and try again for edit
+    await asyncio.sleep(2)
+    try:
+        edited_message = await client.get_messages(BOT_USERNAME, ids=message.id)
+        if edited_message and edited_message.message != message.message:
+            print("Message was edited after longer wait")
+            return edited_message
+    except:
+        pass
+    
+    print("No updated message found")
     return None
 
 # =========================
@@ -332,94 +363,75 @@ async def has_next_button(message) -> bool:
     return next_button is not None
 
 # =========================
-# WAIT FOR REPLY - FIXED TO GET CORRECT MESSAGE
+# WAIT FOR REPLY
 # =========================
 
 async def wait_for_reply(sent_message, query_text, timeout=15):
-    """Wait for bot reply - only return message that is a response to our query"""
+    """Wait for bot reply to our query"""
     start_time = asyncio.get_event_loop().time()
     sent_id = sent_message.id
     sent_text = sent_message.message.strip()
     
     print(f"Waiting for reply to message ID: {sent_id}")
-    print(f"Query text: {sent_text}")
     
     while asyncio.get_event_loop().time() - start_time < timeout:
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1)
         
-        # Get recent messages
-        messages = await client.get_messages(
-            BOT_USERNAME,
-            limit=10
-        )
+        messages = await client.get_messages(BOT_USERNAME, limit=10)
         
         for msg in messages:
-            # Skip our own messages
             if msg.out:
                 continue
-            
-            # Skip empty messages
             if not msg.message:
                 continue
-            
-            # Must be newer than our sent message
             if msg.id <= sent_id:
                 continue
-            
-            # Skip if it's just repeating our query
             if msg.message.strip() == sent_text:
                 continue
             
-            # Check if this message contains data (has emojis or is long)
+            # Check if this is a valid data reply
             has_data_emojis = re.search(r'[📩📞🏘️🃏👤👨🗺️💾🎲🚗🧹🥻🚁🎰📱🛏]', msg.message)
-            is_long = len(msg.message) > 100
+            has_phone = re.search(r'91\d{10}', msg.message)
             
-            if has_data_emojis or is_long:
+            if has_data_emojis or has_phone or len(msg.message) > 200:
                 print(f"Found valid reply message ID: {msg.id}")
-                print(f"Reply preview: {msg.message[:150]}...")
                 return msg
         
-        # Also check if the sent message itself was edited (bot might edit it directly)
+        # Check if sent message was edited
         try:
             current_sent = await client.get_messages(BOT_USERNAME, ids=sent_id)
             if current_sent and current_sent.message != sent_text:
                 if len(current_sent.message) > 100:
-                    print(f"Sent message was edited with reply data (ID: {sent_id})")
+                    print(f"Sent message was edited with reply (ID: {sent_id})")
                     return current_sent
         except:
             pass
     
-    print("Timeout waiting for reply")
     return None
 
 # =========================
-# MAIN SEARCH WITH RELIABLE MESSAGE SELECTION
+# MAIN SEARCH
 # =========================
 
 @app.post("/search")
 async def search(data: Query):
     try:
-        print("\n========== NEW REQUEST ==========")
-        print("Query:", data.message)
+        print("\n" + "="*50)
+        print("NEW SEARCH REQUEST")
+        print("="*50)
+        print(f"Query: {data.message}")
         
         start_total = asyncio.get_event_loop().time()
         
         # Send initial query
-        sent = await client.send_message(
-            BOT_USERNAME,
-            data.message
-        )
+        sent = await client.send_message(BOT_USERNAME, data.message)
+        print(f"Sent message ID: {sent.id}")
         
-        print(f"Message Sent, ID: {sent.id}")
-        
-        # Wait for correct reply
+        # Wait for first reply
         target_message = await wait_for_reply(sent, data.message, timeout=15)
         
         if not target_message:
-            return {
-                "status": False,
-                "error": "Bot reply timeout - no valid response received"
-            }
+            return {"status": False, "error": "Bot reply timeout"}
         
         print(f"First reply received in {asyncio.get_event_loop().time() - start_total:.2f}s")
         
@@ -430,80 +442,84 @@ async def search(data: Query):
         source_title = None
         source_description = None
         max_pages = 50
-        previous_contents = set()
-        stuck_count = 0
-        max_stuck = 3
+        seen_page_numbers = set()  # Track page numbers we've seen
+        max_retries_per_page = 2
         
         while current_message and page_num <= max_pages:
-            page_start = asyncio.get_event_loop().time()
             print(f"\n--- Processing Page {page_num} ---")
-            
-            # Check for content loop
-            content_hash = hash(current_message.message[:500])
-            if content_hash in previous_contents and page_num > 1:
-                print("Content loop detected - same page content repeated")
-                break
-            previous_contents.add(content_hash)
             
             # Get metadata from first page
             if source_title is None:
                 source_title, source_description = get_source_metadata(current_message.message)
+                print(f"Source: {source_title}")
             
             # Parse records
             page_records = parse_page_text(current_message.message)
-            new_records_count = len(page_records)
+            print(f"Found {len(page_records)} records on this page")
             all_records.extend(page_records)
             
             # Get page numbers
             current_page, total_pages = get_page_numbers(current_message.message)
-            
             if current_page and total_pages:
-                print(f"Page {current_page}/{total_pages} - {new_records_count} records ({asyncio.get_event_loop().time() - page_start:.2f}s)")
+                print(f"Page {current_page}/{total_pages}")
+                seen_page_numbers.add(current_page)
             else:
-                print(f"Page {page_num} - {new_records_count} records ({asyncio.get_event_loop().time() - page_start:.2f}s)")
+                print("No page indicator found")
             
-            # Check if we should stop
+            # Check for next button
             has_next = await has_next_button(current_message)
             
             if not has_next:
-                print("No next button found. Scraping complete.")
+                print("No next button found - scraping complete")
                 break
             
-            # Stop if we've reached total pages
+            # If we know total pages and we've reached it
             if total_pages and current_page and current_page >= total_pages:
-                print(f"Reached last page ({current_page}/{total_pages}). Complete.")
+                print(f"Reached last page ({current_page}/{total_pages})")
                 break
             
-            # Click next button
-            print("Clicking next button...")
-            next_message = await click_next_button(current_message)
+            # Click next button with retry
+            retry_count = 0
+            next_message = None
+            
+            while retry_count < max_retries_per_page and not next_message:
+                print(f"Clicking next button (attempt {retry_count + 1})...")
+                next_message = await click_next_button(current_message, current_page)
+                
+                if not next_message:
+                    print(f"Failed to get next page, retrying...")
+                    retry_count += 1
+                    await asyncio.sleep(1)
             
             if not next_message:
-                print("Failed to get next page")
-                stuck_count += 1
-                if stuck_count >= max_stuck:
-                    print("Max retries reached. Stopping.")
-                    break
-                continue
-            else:
-                stuck_count = 0
+                print("Could not fetch next page after retries - stopping")
+                break
             
-            # Verify page actually changed
-            if next_message.message == current_message.message:
-                print("Message content unchanged after click. May be last page.")
-                new_page, _ = get_page_numbers(next_message.message)
-                old_page, _ = get_page_numbers(current_message.message)
-                if new_page and old_page and new_page == old_page:
-                    print("Page number didn't change. Stopping.")
-                    break
-                elif not new_page:
-                    break
+            # Verify we actually moved to a new page
+            new_page, _ = get_page_numbers(next_message.message)
+            old_page, _ = get_page_numbers(current_message.message)
+            
+            if new_page and old_page and new_page <= old_page:
+                print(f"WARNING: Page didn't advance ({old_page} -> {new_page})")
+                # Try one more time with longer wait
+                await asyncio.sleep(2)
+                next_message = await click_next_button(current_message, current_page)
+                if next_message:
+                    new_page, _ = get_page_numbers(next_message.message)
+                    if new_page and new_page <= old_page:
+                        print("Page still not advancing - stopping")
+                        break
+            elif new_page:
+                print(f"Advanced to page {new_page}")
             
             current_message = next_message
             page_num += 1
         
         total_time = asyncio.get_event_loop().time() - start_total
-        print(f"\n=== COMPLETE: {len(all_records)} records from {page_num} pages in {total_time:.2f}s ===")
+        print(f"\n{'='*50}")
+        print(f"COMPLETE: {len(all_records)} records from {page_num} pages")
+        print(f"Time taken: {total_time:.2f} seconds")
+        print(f"{'='*50}")
         
         result = {
             "source1": {
@@ -525,14 +541,10 @@ async def search(data: Query):
         }
         
     except Exception as e:
-        print("\nERROR:")
-        print(str(e))
+        print(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
-        return {
-            "status": False,
-            "error": str(e)
-        }
+        return {"status": False, "error": str(e)}
 
 # =========================
 # TEST ENDPOINT
@@ -550,14 +562,7 @@ async def test(q: str):
 async def root():
     return {
         "status": True,
-        "message": "Reliable Multi-Page Telegram Bot Scraper API",
-        "features": [
-            "Correct message selection based on sent message ID",
-            "Only returns messages newer than user query",
-            "Filters out echo/repeat messages",
-            "Checks for data emojis to validate bot reply",
-            "Also checks if sent message was edited by bot"
-        ]
+        "message": "Reliable Multi-Page Telegram Bot Scraper API - Fixed Pagination"
     }
 
 # =========================
