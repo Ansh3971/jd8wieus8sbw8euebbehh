@@ -328,8 +328,12 @@ async def search(data: Query):
         page_num = 1
         source_title = None
         source_description = None
+        max_pages = 50
         
-        while current:
+        # Store previous page number to detect loop
+        previous_page = None
+        
+        while current and page_num <= max_pages:
             print(f"\n--- Page {page_num} ---")
             
             # Get metadata
@@ -342,58 +346,64 @@ async def search(data: Query):
             print(f"Records: {len(records)}")
             all_records.extend(records)
             
-            # Get page numbers
+            # Get current page numbers
             current_page, total_pages = get_current_page(current.message)
+            
             if current_page and total_pages:
                 print(f"Page: {current_page}/{total_pages}")
                 
-                # ✅ STOP CONDITION: If we're on the last page, break
+                # ✅ CRITICAL: If we're on the last page, break out of loop
                 if current_page >= total_pages:
-                    print(f"✓ Reached last page ({current_page}/{total_pages}). Stopping.")
+                    print(f"✓ REACHED LAST PAGE ({current_page}/{total_pages}) - STOPPING")
                     break
             
-            # Click next button
+            # Check if we're stuck on same page
+            if previous_page is not None and current_page == previous_page:
+                print(f"⚠ Page not advancing ({current_page} -> {current_page}) - STOPPING")
+                break
+            
+            previous_page = current_page
+            
+            # Try to click next button
             print("Clicking next...")
             next_msg = await click_next_button(current)
             
             if not next_msg:
-                print("No next button or failed to get next page")
+                print("No next button found - STOPPING")
                 break
             
-            # Check if same content (stuck)
+            # Check if content changed
             if next_msg.message == current.message:
-                print("Content didn't change - stopping")
+                print("Content didn't change - STOPPING")
                 break
             
-            # Check if page went backwards (loop)
-            new_page, _ = get_current_page(next_msg.message)
-            if new_page and current_page and new_page <= current_page:
-                print(f"Page didn't advance ({current_page} -> {new_page}) - stopping")
-                break
-            
+            # Update for next iteration
             current = next_msg
             page_num += 1
-            
-            # Safety limit
-            if page_num > 50:
-                print("Reached max pages (50) - stopping")
-                break
+        
+        # FALLBACK: If we didn't break properly but have page numbers, double-check
+        final_page, final_total = get_current_page(current.message) if current else (None, None)
+        if final_page and final_total and final_page >= final_total:
+            print(f"✓ Last page confirmed: {final_page}/{final_total}")
         
         total_time = asyncio.get_event_loop().time() - start_time
         print(f"\n{'='*50}")
         print(f"COMPLETE: {len(all_records)} records from {page_num} pages in {total_time:.2f}s")
         print(f"{'='*50}")
         
+        # Build response
+        result = {
+            "source1": {
+                "title": source_title or "Data Source",
+                "description": source_description or "",
+                "records": all_records
+            }
+        }
+        
         return {
             "status": True,
             "query": data.message,
-            "data": {
-                "source1": {
-                    "title": source_title or "Data Source",
-                    "description": source_description or "",
-                    "records": all_records
-                }
-            },
+            "data": result,
             "meta": {
                 "pages_scraped": page_num,
                 "total_records": len(all_records),
