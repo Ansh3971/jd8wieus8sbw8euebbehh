@@ -1,12 +1,14 @@
 import os
 import re
 import asyncio
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.events import CallbackQuery
 
 from dotenv import load_dotenv
 
@@ -26,7 +28,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 # =========================
 
 app = FastAPI(
-    title="Telegram Bot API"
+    title="Telegram Bot API - Multi-Page Scraper"
 )
 
 # =========================
@@ -111,23 +113,19 @@ def get_field_name(raw_key):
 # =========================
 
 def parse_line(line):
-    """Extract field name and value from a line with emoji"""
     line = line.strip()
     if not line:
         return None, None
     
-    # Pattern: emoji(s) + field_name: value
     emoji_pattern = re.compile(r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$')
     match = emoji_pattern.match(line)
     
     if match:
-        emoji = match.group(1)
         key_raw = match.group(2)
         value = match.group(3).strip()
         field_name = get_field_name(key_raw)
         return field_name, value
     
-    # Handle Telephone/Email without colon
     if line.startswith('📞'):
         phone_match = re.search(r'(\d+)', line)
         if phone_match:
@@ -141,23 +139,23 @@ def parse_line(line):
     return None, None
 
 # =========================
-# MAIN PARSER - PROPER RECORD GROUPING
+# PARSE SINGLE PAGE
 # =========================
 
-def parse_message(text):
+def parse_page_text(text: str) -> List[Dict[str, Any]]:
+    """Parse one page of bot reply into list of records"""
     if not text:
-        return {}
+        return []
     
-    # Remove truncation note
+    # Remove truncation note if present
     if "Some data did not fit this message" in text:
         text = text.split("Some data did not fit this message")[0]
     
     lines = text.splitlines()
     
-    # Extract source title and description
-    source_title = None
-    source_description = ""
+    # Find where actual data starts (skip title and description)
     data_start_idx = 0
+    source_title = None
     
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -168,11 +166,9 @@ def parse_message(text):
                 break
     
     if not source_title:
-        source_title = "Data Source"
         data_start_idx = 0
     
-    # Extract description (lines between title and first data line)
-    desc_lines = []
+    # Skip description lines
     for i in range(data_start_idx, len(lines)):
         line = lines[i].strip()
         if not line:
@@ -180,11 +176,8 @@ def parse_message(text):
         if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', line):
             data_start_idx = i
             break
-        desc_lines.append(line)
     
-    source_description = " ".join(desc_lines).strip()
-    
-    # Parse records - group from blank line to blank line
+    # Parse records from this page
     records = []
     current_record = {}
     i = data_start_idx
@@ -192,7 +185,6 @@ def parse_message(text):
     while i < len(lines):
         line = lines[i].strip()
         
-        # Skip empty lines - blank line separates records
         if not line:
             if current_record:
                 records.append(current_record)
@@ -200,15 +192,12 @@ def parse_message(text):
             i += 1
             continue
         
-        # Check for truncation
         if "Some data did not fit this message" in line:
             break
         
-        # Parse the line
         field_name, value = parse_line(line)
         
         if field_name and value:
-            # Handle duplicate fields in same record
             if field_name in current_record:
                 count = 2
                 while f"{field_name}{count}" in current_record:
@@ -217,9 +206,7 @@ def parse_message(text):
             else:
                 current_record[field_name] = value
         else:
-            # If line doesn't parse but we have a record, could be multiline address
             if current_record and line:
-                # Try to append to Adres field
                 if "Adres" in current_record:
                     current_record["Adres"] = current_record["Adres"] + " " + line
                 elif len(current_record) > 0:
@@ -228,23 +215,105 @@ def parse_message(text):
         
         i += 1
     
-    # Append last record if exists
     if current_record:
         records.append(current_record)
     
-    # Clean up empty records
-    records = [r for r in records if r]
-    
-    return {
-        "source1": {
-            "title": source_title,
-            "description": source_description,
-            "records": records
-        }
-    }
+    return [r for r in records if r]
 
 # =========================
-# MAIN SEARCH
+# EXTRACT PAGE INFO
+# =========================
+
+def extract_page_info(text: str) -> Optional[str]:
+    """Extract current page from text like '1/5'"""
+    match = re.search(r'(\d+)/(\d+)', text)
+    if match:
+        return match.group(1), match.group(2)
+    return None, None
+
+# =========================
+# CHECK FOR NEXT BUTTON
+# =========================
+
+async def has_next_button(message) -> bool:
+    """Check if message has next page button (➡)"""
+    if not message.reply_markup:
+        return False
+    
+    try:
+        rows = message.reply_markup.rows
+        for row in rows:
+            for button in row.buttons:
+                if button.text == '➡' or button.text == 'Next' or '➡' in button.text:
+                    return True
+    except:
+        pass
+    
+    return False
+
+# =========================
+# CLICK NEXT BUTTON
+# =========================
+
+async def click_next_button(message) -> Optional[Any]:
+    """Click the next page button and return the updated message"""
+    if not message.reply_markup:
+        return None
+    
+    try:
+        rows = message.reply_markup.rows
+        for row in rows:
+            for button in row.buttons:
+                if button.text == '➡' or button.text == 'Next' or '➡' in button.text:
+                    # Click the button
+                    await button.click()
+                    
+                    # Wait for message to update
+                    await asyncio.sleep(2)
+                    
+                    # Get the updated message
+                    updated_msg = await client.get_messages(
+                        BOT_USERNAME,
+                        ids=message.id
+                    )
+                    
+                    return updated_msg
+    except Exception as e:
+        print(f"Error clicking next button: {e}")
+    
+    return None
+
+# =========================
+# GET SOURCE TITLE AND DESCRIPTION
+# =========================
+
+def get_source_metadata(text: str) -> tuple:
+    """Extract source title and description from first page"""
+    lines = text.splitlines()
+    
+    source_title = "Data Source"
+    description = ""
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and re.match(r'^[\U00010000-\U0010FFFF\u2600-\u27BF]', stripped):
+            source_title = stripped
+            # Get description (next non-empty lines until data starts)
+            desc_lines = []
+            for j in range(i + 1, len(lines)):
+                next_line = lines[j].strip()
+                if not next_line:
+                    continue
+                if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', next_line):
+                    break
+                desc_lines.append(next_line)
+            description = " ".join(desc_lines)
+            break
+    
+    return source_title, description
+
+# =========================
+# MAIN SEARCH WITH PAGINATION
 # =========================
 
 @app.post("/search")
@@ -253,19 +322,19 @@ async def search(data: Query):
         print("\n========== NEW REQUEST ==========")
         print("Query:", data.message)
         
+        # Send initial query
         sent = await client.send_message(
             BOT_USERNAME,
             data.message
         )
         
-        print("Message Sent")
-        print("Sent ID:", sent.id)
+        print("Message Sent, ID:", sent.id)
         
+        # Wait for bot reply
         target_message = None
         
         for i in range(30):
-            print(f"\nChecking Messages Attempt {i+1}")
-            
+            print(f"Checking Messages Attempt {i+1}")
             await asyncio.sleep(2)
             
             messages = await client.get_messages(
@@ -285,7 +354,7 @@ async def search(data: Query):
                 
                 target_message = msg
                 print("\nFOUND BOT REPLY")
-                print(target_message.message[:200] + "...")
+                print(msg.message[:200] + "...")
                 break
             
             if target_message:
@@ -297,13 +366,67 @@ async def search(data: Query):
                 "error": "Bot reply timeout"
             }
         
-        text = target_message.message
-        parsed = parse_message(text)
+        # Collect all records from all pages
+        all_records = []
+        current_message = target_message
+        page_num = 1
+        source_title = None
+        source_description = None
+        
+        while current_message:
+            print(f"\n--- Processing Page {page_num} ---")
+            
+            # Extract source metadata from first page only
+            if source_title is None:
+                source_title, source_description = get_source_metadata(current_message.message)
+            
+            # Parse records from current page
+            page_records = parse_page_text(current_message.message)
+            print(f"Found {len(page_records)} records on page {page_num}")
+            all_records.extend(page_records)
+            
+            # Check for next page button
+            has_next = await has_next_button(current_message)
+            
+            if not has_next:
+                print("No next page button found. Done.")
+                break
+            
+            # Click next button
+            print("Clicking next page button...")
+            next_message = await click_next_button(current_message)
+            
+            if not next_message or next_message.message == current_message.message:
+                print("No change after clicking next. Done.")
+                break
+            
+            current_message = next_message
+            page_num += 1
+            
+            # Safety limit - prevent infinite loops
+            if page_num > 50:
+                print("Reached maximum page limit (50). Stopping.")
+                break
+        
+        print(f"\n=== TOTAL: {len(all_records)} records collected from {page_num} pages ===")
+        
+        # Build final response
+        result = {
+            "source1": {
+                "title": source_title or "Data Source",
+                "description": source_description or "",
+                "records": all_records
+            }
+        }
         
         return {
             "status": True,
             "query": data.message,
-            "data": parsed
+            "data": result,
+            "meta": {
+                "pages_scraped": page_num,
+                "total_records": len(all_records)
+            }
         }
         
     except Exception as e:
@@ -315,14 +438,12 @@ async def search(data: Query):
         }
 
 # =========================
-# BROWSER SEARCH
+# TEST ENDPOINT
 # =========================
 
 @app.get("/test")
 async def test(q: str):
-    return await search(
-        Query(message=q)
-    )
+    return await search(Query(message=q))
 
 # =========================
 # ROOT
@@ -332,7 +453,13 @@ async def test(q: str):
 async def root():
     return {
         "status": True,
-        "message": "API Running"
+        "message": "Multi-Page Telegram Bot Scraper API Running",
+        "features": [
+            "Automatic pagination detection",
+            "Auto-click next page button (➡)",
+            "Merges all pages into single response",
+            "Returns complete aggregated data"
+        ]
     }
 
 # =========================
