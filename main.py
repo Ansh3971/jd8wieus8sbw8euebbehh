@@ -68,121 +68,170 @@ async def shutdown():
 # =========================
 
 def clean_key(key):
-    key = re.sub(r'[^a-zA-Z0-9 ]', '', key)
+    # Remove emojis and special chars, keep letters and spaces
+    key = re.sub(r'[^\w\s]', '', key)
+    key = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', key)
     key = key.strip()
     words = key.split()
-    return ''.join(word.capitalize() for word in words)
+    return ' '.join(word.capitalize() for word in words)
 
 # =========================
-# DETECT SOURCE HEADER
+# EXTRACT EMOJI NAME
 # =========================
 
-def detect_source_header(line):
-    """Check if line starts with emoji + name pattern"""
-    if not line:
-        return False
-    # Check for common emojis at start
-    emojis = ['💾', '🎲', '🚗', '🧹', '🥻', '🚁', '🎰', '📱', '🛏', '👕', '📞', '🏘️', '👤']
-    for emoji in emojis:
-        if line.startswith(emoji):
-            return True
-    return False
-
-# =========================
-# PARSE SINGLE SOURCE BLOCK
-# =========================
-
-def parse_source_block(lines, start_idx):
-    """Parse one source block from starting index"""
-    result = {
-        "title": "",
-        "description": "",
-        "records": []
+def get_field_name(raw_key):
+    """Convert 📩Email -> Email, 👤Full name -> FullName, etc."""
+    # Remove emojis
+    name = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', raw_key)
+    name = name.strip()
+    name = clean_key(name)
+    
+    # Map common variations
+    mapping = {
+        "Email": "Email",
+        "Telephone": "Phone",
+        "Phone": "Phone",
+        "Adres": "Adres",
+        "Address": "Adres",
+        "Document number": "DocumentNumber",
+        "Document": "DocumentNumber",
+        "Full name": "FullName",
+        "Fullname": "FullName",
+        "The name of the father": "FatherName",
+        "Father name": "FatherName",
+        "Region": "Region",
+        "Nick": "Nick",
+        "Nickname": "Nick"
     }
     
-    # First line is title
-    if start_idx < len(lines):
-        result["title"] = lines[start_idx].strip()
+    for key, value in mapping.items():
+        if key.lower() in name.lower():
+            return value
     
-    current_record = {}
-    in_records = False
-    description_lines = []
+    return name.replace(" ", "")
+
+# =========================
+# PARSE RECORD BLOCK
+# =========================
+
+def parse_record_block(lines, start_idx):
+    """Parse one complete record starting at start_idx"""
+    record = {}
+    i = start_idx
     
-    record_start_keys = ["Email", "Phone", "Telephone", "Username", "User", "FullName", "Name"]
-    
-    i = start_idx + 1
     while i < len(lines):
         line = lines[i].strip()
-        
-        # Check if this line starts a new source
-        if detect_source_header(line):
-            break
         
         if not line:
             i += 1
             continue
         
-        # Check for key:value pattern
-        if ":" in line:
-            parts = line.split(":", 1)
-            key = clean_key(parts[0])
-            value = parts[1].strip()
-            
-            if not value:
-                i += 1
-                continue
-            
-            # Check if this starts a new record
-            if key in record_start_keys and current_record:
-                result["records"].append(current_record)
-                current_record = {}
-                in_records = True
-            
-            in_records = True
-            
-            # Handle duplicate keys
-            if key in current_record:
-                count = 2
-                while f"{key}{count}" in current_record:
-                    count += 1
-                current_record[f"{key}{count}"] = value
-            else:
-                current_record[key] = value
-        else:
-            # Non key:value - could be description or multiline value
-            if not in_records:
-                description_lines.append(line)
-            else:
-                # Append to last field if it makes sense
-                if current_record:
-                    last_key = list(current_record.keys())[-1]
-                    current_record[last_key] = current_record[last_key] + " " + line
+        # Stop if we hit a blank line followed by another Telephone (start of new record)
+        if i > start_idx and line.startswith('📞') and not record:
+            break
         
-        i += 1
+        # Check for key:value pattern with emoji
+        emoji_pattern = re.compile(r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$')
+        match = emoji_pattern.match(line)
+        
+        if match:
+            emoji = match.group(1)
+            key_raw = match.group(2)
+            value = match.group(3).strip()
+            
+            if value:
+                field_name = get_field_name(key_raw)
+                
+                # Handle duplicate fields
+                if field_name in record:
+                    count = 2
+                    while f"{field_name}{count}" in record:
+                        count += 1
+                    record[f"{field_name}{count}"] = value
+                else:
+                    record[field_name] = value
+            i += 1
+        else:
+            # Check if line starts with telephone without colon format
+            if line.startswith('📞'):
+                # Extract number after emoji
+                phone_match = re.match(r'📞+\s*(\d+)', line)
+                if phone_match:
+                    phone = phone_match.group(1)
+                    if "Phone" in record:
+                        count = 2
+                        while f"Phone{count}" in record:
+                            count += 1
+                        record[f"Phone{count}"] = phone
+                    else:
+                        record["Phone"] = phone
+                i += 1
+            else:
+                # Maybe multiline value for last field
+                if record and line:
+                    last_key = list(record.keys())[-1]
+                    record[last_key] = record[last_key] + " " + line
+                i += 1
     
-    # Add last record
-    if current_record:
-        result["records"].append(current_record)
-    
-    result["description"] = " ".join(description_lines).strip()
-    
-    return result, i
+    return record, i
 
 # =========================
-# ADVANCED GROUPED PARSER
+# MAIN PARSER
 # =========================
 
 def parse_message(text):
-    """Parse message into grouped sources"""
-    result = {}
+    """Parse bot reply into source with records"""
     
     if not text:
-        return result
+        return {}
+    
+    # Check if message contains "Some data did not fit this message"
+    truncation_note = "Some data did not fit this message"
+    if truncation_note in text:
+        text = text.split(truncation_note)[0]
     
     lines = text.splitlines()
-    i = 0
     
-    source_counter = 1
+    result = {}
+    
+    # Find source header (first line with emoji like 💾)
+    source_title = None
+    source_description_lines = []
+    start_line = 0
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and re.match(r'^[\U00010000-\U0010FFFF\u2600-\u27BF]', stripped):
+            # This could be source title
+            if not source_title:
+                source_title = stripped
+                start_line = i + 1
+                break
+    
+    if not source_title:
+        # No source header found, treat whole text as source1
+        source_title = "Data Source"
+        start_line = 0
+    
+    # Extract description (lines after title until first data line)
+    description_lines = []
+    data_start = start_line
+    
+    for i in range(start_line, len(lines)):
+        line = lines[i].strip()
+        if not line:
+            continue
+        # If line starts with data emoji, description ends
+        if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', line):
+            data_start = i
+            break
+        description_lines.append(line)
+    
+    description = " ".join(description_lines).strip()
+    
+    # Parse records
+    records = []
+    i = data_start
     
     while i < len(lines):
         line = lines[i].strip()
@@ -191,15 +240,21 @@ def parse_message(text):
             i += 1
             continue
         
-        # Check if line is a source header
-        if detect_source_header(line):
-            source_data, next_i = parse_source_block(lines, i)
-            if source_data and source_data.get("records"):
-                result[f"source{source_counter}"] = source_data
-                source_counter += 1
+        # Look for start of a record (Telephone or Email)
+        if line.startswith('📞') or line.startswith('📩'):
+            record, next_i = parse_record_block(lines, i)
+            if record:
+                records.append(record)
             i = next_i
         else:
             i += 1
+    
+    # Build final result
+    result["source1"] = {
+        "title": source_title,
+        "description": description,
+        "records": records
+    }
     
     return result
 
@@ -213,10 +268,6 @@ async def search(data: Query):
         print("\n========== NEW REQUEST ==========")
         print("Query:", data.message)
         
-        # =====================
-        # SEND MESSAGE
-        # =====================
-        
         sent = await client.send_message(
             BOT_USERNAME,
             data.message
@@ -224,10 +275,6 @@ async def search(data: Query):
         
         print("Message Sent")
         print("Sent ID:", sent.id)
-        
-        # =====================
-        # WAIT FOR BOT REPLY
-        # =====================
         
         target_message = None
         
@@ -259,31 +306,14 @@ async def search(data: Query):
             if target_message:
                 break
         
-        # =====================
-        # TIMEOUT
-        # =====================
-        
         if not target_message:
             return {
                 "status": False,
                 "error": "Bot reply timeout"
             }
         
-        # =====================
-        # TEXT
-        # =====================
-        
         text = target_message.message
-        
-        # =====================
-        # PARSE - GROUPED BY SOURCE
-        # =====================
-        
         parsed = parse_message(text)
-        
-        # =====================
-        # RESPONSE
-        # =====================
         
         return {
             "status": True,
