@@ -66,51 +66,206 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# SIMPLE PARSER
+# ADVANCED GROUPED PARSER
 # =========================
 
 def parse_message(text):
 
-    parsed = {}
-
     if not text:
-        return parsed
+
+        return {
+            "raw": "",
+            "records": []
+        }
+
+    # CLEAN TEXT
+    text = (
+        str(text)
+        .replace("\r", "")
+        .strip()
+    )
 
     lines = text.splitlines()
+
+    records = []
+
+    current = {}
 
     for line in lines:
 
         line = line.strip()
 
+        # SKIP EMPTY
         if not line:
             continue
 
+        # =====================
+        # KEY : VALUE
+        # =====================
+
         if ":" in line:
 
-            parts = line.split(":", 1)
+            parts = line.split(
+                ":",
+                1
+            )
 
-            key = parts[0].strip()
-            value = parts[1].strip()
+            key = (
+                parts[0]
+                .strip()
+            )
 
+            value = (
+                parts[1]
+                .strip()
+            )
+
+            # SKIP EMPTY VALUE
+            if not value:
+                continue
+
+            # REMOVE EMOJIS
+            for sym in [
+                "📞",
+                "📩",
+                "👤",
+                "🏘️",
+                "👨",
+                "🗺️",
+                "🎯",
+                "📆",
+                "🃏",
+                "🌃",
+                "🔑",
+                "🔐",
+                "💶",
+                "💸",
+                "🚻",
+                "🌐",
+                "🔎",
+                "🏢",
+                "🗾"
+            ]:
+
+                key = key.replace(
+                    sym,
+                    ""
+                )
+
+            key = key.strip()
+
+            lower = key.lower()
+
+            # =====================
+            # NEW RECORD DETECTION
+            # =====================
+
+            if (
+                lower in [
+                    "email",
+                    "mail",
+                    "telephone",
+                    "phone",
+                    "mobile",
+                    "username",
+                    "user",
+                    "full name",
+                    "name"
+                ]
+                and current
+            ):
+
+                records.append(
+                    current
+                )
+
+                current = {}
+
+            # =====================
             # MULTIPLE VALUES
-            if key in parsed:
+            # =====================
 
-                if isinstance(parsed[key], list):
+            if key in current:
 
-                    parsed[key].append(value)
+                if isinstance(
+                    current[key],
+                    list
+                ):
+
+                    if value not in current[key]:
+
+                        current[key].append(
+                            value
+                        )
 
                 else:
 
-                    parsed[key] = [
-                        parsed[key],
-                        value
-                    ]
+                    if current[key] != value:
+
+                        current[key] = [
+                            current[key],
+                            value
+                        ]
 
             else:
 
-                parsed[key] = value
+                current[key] = value
 
-    return parsed
+        else:
+
+            # =====================
+            # RAW TEXT
+            # =====================
+
+            if "_text" not in current:
+
+                current["_text"] = []
+
+            current["_text"].append(
+                line
+            )
+
+    # =====================
+    # LAST RECORD
+    # =====================
+
+    if current:
+
+        records.append(current)
+
+    # =====================
+    # CLEAN RECORDS
+    # =====================
+
+    cleaned = []
+
+    for rec in records:
+
+        clean_rec = {}
+
+        for k, v in rec.items():
+
+            if not v:
+                continue
+
+            clean_rec[k] = v
+
+        if clean_rec:
+
+            cleaned.append(
+                clean_rec
+            )
+
+    return {
+
+        "raw": text,
+
+        "total_records": len(
+            cleaned
+        ),
+
+        "records": cleaned
+    }
 
 # =========================
 # MAIN SEARCH
@@ -157,24 +312,16 @@ async def search(data: Query):
 
             for msg in messages:
 
-                print("\n----- MESSAGE -----")
-                print("ID:", msg.id)
-                print("OUT:", msg.out)
-                print("TEXT:", msg.message)
-
-                # SKIP YOUR OWN MESSAGE
+                # SKIP OWN MESSAGE
                 if msg.out:
-                    print("Skipped Own Message")
                     continue
 
                 # SKIP EMPTY
                 if not msg.message:
-                    print("Skipped Empty Message")
                     continue
 
                 # ONLY NEW MESSAGE
                 if msg.id <= sent.id:
-                    print("Skipped Old Message")
                     continue
 
                 # SKIP SAME QUERY
@@ -183,10 +330,8 @@ async def search(data: Query):
                     ==
                     data.message.strip()
                 ):
-                    print("Skipped Same Query")
                     continue
 
-                # FOUND
                 target_message = msg
 
                 print("\nFOUND BOT REPLY")
@@ -203,15 +348,13 @@ async def search(data: Query):
 
         if not target_message:
 
-            print("\nBOT REPLY TIMEOUT")
-
             return {
                 "status": False,
                 "error": "Bot reply timeout"
             }
 
         # =====================
-        # TEXT
+        # GET TEXT
         # =====================
 
         text = target_message.message
@@ -220,7 +363,9 @@ async def search(data: Query):
         # PARSE
         # =====================
 
-        parsed = parse_message(text)
+        parsed = parse_message(
+            text
+        )
 
         # =====================
         # RESPONSE
@@ -240,7 +385,7 @@ async def search(data: Query):
 
             "text": text,
 
-            "parsed": parsed
+            "data": parsed
         }
 
     except Exception as e:
