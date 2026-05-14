@@ -1,13 +1,13 @@
 import os
-import re
 import asyncio
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-from dotenv import load_dotenv
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+
+from dotenv import load_dotenv
 
 # =========================
 # LOAD ENV
@@ -25,7 +25,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 # =========================
 
 app = FastAPI(
-    title="Telegram Bot JSON API"
+    title="Telegram Bot API"
 )
 
 # =========================
@@ -66,107 +66,51 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# TEXT CLEANER
-# =========================
-
-def clean_text(text):
-
-    if not text:
-        return ""
-
-    return (
-        str(text)
-        .replace("\n", " ")
-        .replace("\t", " ")
-        .replace("\r", " ")
-        .strip()
-    )
-
-# =========================
-# GENERIC MESSAGE PARSER
+# SIMPLE PARSER
 # =========================
 
 def parse_message(text):
 
-    result = {
-        "raw": text,
-        "parsed": {}
-    }
+    parsed = {}
 
     if not text:
-        return result
+        return parsed
 
     lines = text.splitlines()
 
-    parsed = {}
-
     for line in lines:
 
-        line = clean_text(line)
+        line = line.strip()
 
         if not line:
             continue
 
-        # key: value
         if ":" in line:
 
             parts = line.split(":", 1)
 
-            key = clean_text(parts[0])
-            value = clean_text(parts[1])
-
-            if not key or not value:
-                continue
+            key = parts[0].strip()
+            value = parts[1].strip()
 
             # MULTIPLE VALUES
             if key in parsed:
 
                 if isinstance(parsed[key], list):
+
                     parsed[key].append(value)
 
                 else:
+
                     parsed[key] = [
                         parsed[key],
                         value
                     ]
 
             else:
+
                 parsed[key] = value
 
-    # DEDUPE
-    for k, v in parsed.items():
-
-        if isinstance(v, list):
-
-            unique = []
-
-            for item in v:
-                if item not in unique:
-                    unique.append(item)
-
-            parsed[k] = unique
-
-    result["parsed"] = parsed
-
-    # EXTRACT URLS
-    urls = re.findall(
-        r'https?://\\S+',
-        text
-    )
-
-    if urls:
-        result["urls"] = urls
-
-    # EXTRACT EMAILS
-    emails = re.findall(
-        r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}',
-        text
-    )
-
-    if emails:
-        result["emails"] = list(set(emails))
-
-    return result
+    return parsed
 
 # =========================
 # MAIN SEARCH
@@ -177,57 +121,132 @@ async def search(data: Query):
 
     try:
 
-        # SEND MESSAGE TO BOT
-        await client.send_message(
+        print("\n========== NEW REQUEST ==========")
+        print("Query:", data.message)
+
+        # =====================
+        # SEND MESSAGE
+        # =====================
+
+        sent = await client.send_message(
             BOT_USERNAME,
             data.message
         )
 
-        # WAIT RESPONSE
-        await asyncio.sleep(3)
+        print("Message Sent")
+        print("Sent ID:", sent.id)
 
-        # GET LATEST MESSAGE
-        messages = await client.get_messages(
-            BOT_USERNAME,
-            limit=5
-        )
-
-        if not messages:
-
-            return {
-                "status": False,
-                "error": "No response from bot"
-            }
+        # =====================
+        # WAIT FOR BOT REPLY
+        # =====================
 
         target_message = None
 
-        for msg in messages:
+        for i in range(30):
 
-            if msg.message:
+            print(f"\nChecking Messages Attempt {i+1}")
+
+            await asyncio.sleep(2)
+
+            messages = await client.get_messages(
+                BOT_USERNAME,
+                limit=15
+            )
+
+            print("Messages Found:", len(messages))
+
+            for msg in messages:
+
+                print("\n----- MESSAGE -----")
+                print("ID:", msg.id)
+                print("OUT:", msg.out)
+                print("TEXT:", msg.message)
+
+                # SKIP YOUR OWN MESSAGE
+                if msg.out:
+                    print("Skipped Own Message")
+                    continue
+
+                # SKIP EMPTY
+                if not msg.message:
+                    print("Skipped Empty Message")
+                    continue
+
+                # ONLY NEW MESSAGE
+                if msg.id <= sent.id:
+                    print("Skipped Old Message")
+                    continue
+
+                # SKIP SAME QUERY
+                if (
+                    msg.message.strip()
+                    ==
+                    data.message.strip()
+                ):
+                    print("Skipped Same Query")
+                    continue
+
+                # FOUND
                 target_message = msg
+
+                print("\nFOUND BOT REPLY")
+                print(target_message.message)
+
                 break
+
+            if target_message:
+                break
+
+        # =====================
+        # TIMEOUT
+        # =====================
 
         if not target_message:
 
+            print("\nBOT REPLY TIMEOUT")
+
             return {
                 "status": False,
-                "error": "No text message found"
+                "error": "Bot reply timeout"
             }
+
+        # =====================
+        # TEXT
+        # =====================
 
         text = target_message.message
 
+        # =====================
+        # PARSE
+        # =====================
+
         parsed = parse_message(text)
 
+        # =====================
+        # RESPONSE
+        # =====================
+
         return {
+
             "status": True,
+
             "query": data.message,
+
             "message_id": target_message.id,
-            "date": str(target_message.date),
+
+            "date": str(
+                target_message.date
+            ),
+
             "text": text,
-            "data": parsed
+
+            "parsed": parsed
         }
 
     except Exception as e:
+
+        print("\nERROR:")
+        print(str(e))
 
         return {
             "status": False,
@@ -244,6 +263,18 @@ async def test(q: str):
     return await search(
         Query(message=q)
     )
+
+# =========================
+# ROOT
+# =========================
+
+@app.get("/")
+async def root():
+
+    return {
+        "status": True,
+        "message": "API Running"
+    }
 
 # =========================
 # RUN
