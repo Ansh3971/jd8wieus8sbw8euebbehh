@@ -27,7 +27,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 # =========================
 
 app = FastAPI(
-    title="Telegram Bot API - Multi-Page Scraper"
+    title="Telegram Bot API - Fast Multi-Page Scraper"
 )
 
 # =========================
@@ -138,34 +138,25 @@ def parse_line(line):
     return None, None
 
 # =========================
-# PARSE SINGLE PAGE
+# PARSE SINGLE PAGE (OPTIMIZED)
 # =========================
 
 def parse_page_text(text: str) -> List[Dict[str, Any]]:
-    """Parse one page of bot reply into list of records"""
     if not text:
         return []
     
-    # Remove truncation note if present
     if "Some data did not fit this message" in text:
         text = text.split("Some data did not fit this message")[0]
     
     lines = text.splitlines()
     
-    # Find where actual data starts (skip title and description)
+    # Find data start quickly
     data_start_idx = 0
-    source_title = None
-    
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped and re.match(r'^[\U00010000-\U0010FFFF\u2600-\u27BF]', stripped):
-            if not source_title:
-                source_title = stripped
-                data_start_idx = i + 1
-                break
-    
-    if not source_title:
-        data_start_idx = 0
+            data_start_idx = i + 1
+            break
     
     # Skip description lines
     for i in range(data_start_idx, len(lines)):
@@ -176,7 +167,6 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
             data_start_idx = i
             break
     
-    # Parse records from this page
     records = []
     current_record = {}
     i = data_start_idx
@@ -224,7 +214,6 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
 # =========================
 
 def get_source_metadata(text: str) -> tuple:
-    """Extract source title and description from first page"""
     lines = text.splitlines()
     
     source_title = "Data Source"
@@ -234,7 +223,6 @@ def get_source_metadata(text: str) -> tuple:
         stripped = line.strip()
         if stripped and re.match(r'^[\U00010000-\U0010FFFF\u2600-\u27BF]', stripped):
             source_title = stripped
-            # Get description (next non-empty lines until data starts)
             desc_lines = []
             for j in range(i + 1, len(lines)):
                 next_line = lines[j].strip()
@@ -249,47 +237,28 @@ def get_source_metadata(text: str) -> tuple:
     return source_title, description
 
 # =========================
-# CLICK NEXT BUTTON - FIXED
+# CLICK NEXT BUTTON (FAST)
 # =========================
 
 async def click_next_button(message) -> Optional[Any]:
-    """Click the next page button (➡) and return the updated (edited) message"""
     if not message.reply_markup:
-        print("No reply_markup on message")
         return None
     
     try:
-        # Get all buttons
         rows = message.reply_markup.rows
-        
         for row_idx, row in enumerate(rows):
             for col_idx, button in enumerate(row.buttons):
-                # Look for next button (➡ or forward arrow)
                 button_text = button.text
-                print(f"Found button: '{button_text}'")
-                
                 if button_text == '➡' or button_text == '→' or 'next' in button_text.lower():
-                    print(f"Clicking button: {button_text}")
-                    
-                    # Correct way to click button in Telethon
-                    # Use message.click() with button text or index
                     await message.click(text=button_text)
-                    
-                    # Wait for message to be edited
-                    await asyncio.sleep(3)
-                    
-                    # Get the updated message (same ID, content changed)
+                    await asyncio.sleep(0.5)  # REDUCED from 3s to 0.5s
                     updated_message = await client.get_messages(
                         BOT_USERNAME,
                         ids=message.id
                     )
-                    
                     return updated_message
-                    
     except Exception as e:
         print(f"Error clicking next button: {e}")
-        import traceback
-        traceback.print_exc()
     
     return None
 
@@ -298,10 +267,8 @@ async def click_next_button(message) -> Optional[Any]:
 # =========================
 
 async def has_next_button(message) -> bool:
-    """Check if message has next page button (➡)"""
     if not message.reply_markup:
         return False
-    
     try:
         rows = message.reply_markup.rows
         for row in rows:
@@ -310,7 +277,6 @@ async def has_next_button(message) -> bool:
                     return True
     except:
         pass
-    
     return False
 
 # =========================
@@ -318,14 +284,52 @@ async def has_next_button(message) -> bool:
 # =========================
 
 def get_current_page(text: str) -> Optional[int]:
-    """Extract current page number from text like '1/5'"""
     match = re.search(r'(\d+)/(\d+)', text)
     if match:
         return int(match.group(1)), int(match.group(2))
     return None, None
 
 # =========================
-# MAIN SEARCH WITH PAGINATION
+# FAST WAIT FOR INITIAL REPLY
+# =========================
+
+async def wait_for_reply(sent_message, timeout=8):
+    """Faster reply detection with exponential backoff"""
+    start_time = asyncio.get_event_loop().time()
+    last_msg_id = sent_message.id
+    
+    # Check every 0.5 seconds initially, then slower
+    delays = [0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 2, 2]
+    
+    for delay in delays:
+        await asyncio.sleep(delay)
+        
+        # Get only the last few messages
+        messages = await client.get_messages(
+            BOT_USERNAME,
+            limit=3
+        )
+        
+        for msg in messages:
+            if msg.out:
+                continue
+            if not msg.message:
+                continue
+            if msg.id <= last_msg_id:
+                continue
+            if msg.message.strip() == sent_message.message.strip():
+                continue
+            
+            return msg
+        
+        # Check timeout
+        if asyncio.get_event_loop().time() - start_time > timeout:
+            break
+    
+    return None
+
+# =========================
+# MAIN SEARCH WITH OPTIMIZED PAGINATION
 # =========================
 
 @app.post("/search")
@@ -334,43 +338,18 @@ async def search(data: Query):
         print("\n========== NEW REQUEST ==========")
         print("Query:", data.message)
         
+        start_total = asyncio.get_event_loop().time()
+        
         # Send initial query
         sent = await client.send_message(
             BOT_USERNAME,
             data.message
         )
         
-        print("Message Sent, ID:", sent.id)
+        print(f"Message Sent, ID: {sent.id}")
         
-        # Wait for bot reply
-        target_message = None
-        
-        for i in range(30):
-            print(f"Checking Messages Attempt {i+1}")
-            await asyncio.sleep(2)
-            
-            messages = await client.get_messages(
-                BOT_USERNAME,
-                limit=15
-            )
-            
-            for msg in messages:
-                if msg.out:
-                    continue
-                if not msg.message:
-                    continue
-                if msg.id <= sent.id:
-                    continue
-                if msg.message.strip() == data.message.strip():
-                    continue
-                
-                target_message = msg
-                print("\nFOUND BOT REPLY")
-                print(msg.message[:200] + "...")
-                break
-            
-            if target_message:
-                break
+        # Fast wait for reply
+        target_message = await wait_for_reply(sent, timeout=10)
         
         if not target_message:
             return {
@@ -378,74 +357,68 @@ async def search(data: Query):
                 "error": "Bot reply timeout"
             }
         
-        # Collect all records from all pages
+        print(f"First reply received in {asyncio.get_event_loop().time() - start_total:.2f}s")
+        
+        # Collect all records
         all_records = []
         current_message = target_message
         page_num = 1
         source_title = None
         source_description = None
-        max_pages = 50  # Safety limit
-        seen_messages = set()  # Avoid duplicate processing
+        max_pages = 50
+        seen_hashes = set()
         
         while current_message and page_num <= max_pages:
+            page_start = asyncio.get_event_loop().time()
             print(f"\n--- Processing Page {page_num} ---")
             
-            # Add to seen to detect loops
-            msg_hash = hash(current_message.message[:100])
-            if msg_hash in seen_messages and page_num > 1:
-                print("Detected loop - same content. Stopping.")
+            # Hash for loop detection
+            msg_hash = hash(current_message.message[:200])
+            if msg_hash in seen_hashes and page_num > 1:
+                print("Loop detected. Stopping.")
                 break
-            seen_messages.add(msg_hash)
+            seen_hashes.add(msg_hash)
             
-            # Extract source metadata from first page only
+            # Get metadata from first page
             if source_title is None:
                 source_title, source_description = get_source_metadata(current_message.message)
-                print(f"Source Title: {source_title}")
             
-            # Parse records from current page
+            # Parse records
             page_records = parse_page_text(current_message.message)
-            print(f"Found {len(page_records)} records on page {page_num}")
             all_records.extend(page_records)
+            print(f"Page {page_num}: {len(page_records)} records ({asyncio.get_event_loop().time() - page_start:.2f}s)")
             
-            # Get current page number if available
+            # Get page info
             current_page, total_pages = get_current_page(current_message.message)
             if current_page:
-                print(f"Page {current_page}/{total_pages}")
+                print(f"Progress: {current_page}/{total_pages}")
             
             # Check for next button
             has_next = await has_next_button(current_message)
             
             if not has_next:
-                print("No next page button found. Done.")
+                print("No next button. Done.")
                 break
             
-            # Also stop if we've reached total pages
             if total_pages and current_page and current_page >= total_pages:
-                print(f"Reached last page ({current_page}/{total_pages}). Done.")
+                print(f"Reached last page. Done.")
                 break
             
-            # Click next button (message will be edited)
-            print("Clicking next page button...")
+            # Click next (fast)
+            click_start = asyncio.get_event_loop().time()
             next_message = await click_next_button(current_message)
+            print(f"Page change took {asyncio.get_event_loop().time() - click_start:.2f}s")
             
-            if not next_message:
-                print("Failed to get next page. Stopping.")
-                break
-            
-            # Check if content changed (if same, we're stuck)
-            if next_message.message == current_message.message:
-                print("Message content didn't change after clicking. Stopping.")
+            if not next_message or next_message.message == current_message.message:
+                print("No content change. Stopping.")
                 break
             
             current_message = next_message
             page_num += 1
-            
-            # Small delay to be respectful
-            await asyncio.sleep(1)
         
-        print(f"\n=== TOTAL: {len(all_records)} records collected from {page_num} pages ===")
+        total_time = asyncio.get_event_loop().time() - start_total
+        print(f"\n=== COMPLETE: {len(all_records)} records from {page_num} pages in {total_time:.2f}s ===")
         
-        # Build final response
         result = {
             "source1": {
                 "title": source_title or "Data Source",
@@ -460,7 +433,8 @@ async def search(data: Query):
             "data": result,
             "meta": {
                 "pages_scraped": page_num,
-                "total_records": len(all_records)
+                "total_records": len(all_records),
+                "time_seconds": round(total_time, 2)
             }
         }
         
@@ -490,13 +464,13 @@ async def test(q: str):
 async def root():
     return {
         "status": True,
-        "message": "Multi-Page Telegram Bot Scraper API Running",
-        "features": [
-            "Automatic pagination detection",
-            "Auto-click next page button (➡) using message.click()",
-            "Handles message editing (same ID, content changes)",
-            "Merges all pages into single response",
-            "Loop detection safety"
+        "message": "Fast Multi-Page Telegram Bot Scraper API",
+        "optimizations": [
+            "Reduced sleep times (2s → 0.5s for page navigation)",
+            "Exponential backoff for initial reply",
+            "Limit messages fetched to 3 instead of 15",
+            "Added timing metrics",
+            "Faster parsing"
         ]
     }
 
