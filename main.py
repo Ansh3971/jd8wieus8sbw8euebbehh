@@ -107,117 +107,41 @@ def get_field_name(raw_key):
     return name.replace(" ", "")
 
 # =========================
-# CHECK IF NEW RECORD STARTS
+# PARSE VALUE FROM LINE
 # =========================
 
-def is_new_record_start(line, current_record):
-    """Check if line indicates start of a new record"""
+def parse_line(line):
+    """Extract field name and value from a line with emoji"""
+    line = line.strip()
     if not line:
-        return False
+        return None, None
     
-    # If we have a complete record (has FullName or FatherName or Email) and see new Telephone
-    if current_record and (line.startswith('📞') or line.startswith('📩')):
-        # Check if this line likely starts fresh entry
-        return True
+    # Pattern: emoji(s) + field_name: value
+    emoji_pattern = re.compile(r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$')
+    match = emoji_pattern.match(line)
     
-    return False
+    if match:
+        emoji = match.group(1)
+        key_raw = match.group(2)
+        value = match.group(3).strip()
+        field_name = get_field_name(key_raw)
+        return field_name, value
+    
+    # Handle Telephone/Email without colon
+    if line.startswith('📞'):
+        phone_match = re.search(r'(\d+)', line)
+        if phone_match:
+            return "Phone", phone_match.group(1)
+    
+    if line.startswith('📩'):
+        email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', line)
+        if email_match:
+            return "Email", email_match.group(1)
+    
+    return None, None
 
 # =========================
-# PARSE RECORDS PROPERLY
-# =========================
-
-def parse_records(lines, start_idx):
-    """Parse all records sequentially, splitting at proper boundaries"""
-    records = []
-    current_record = {}
-    i = start_idx
-    
-    while i < len(lines):
-        line = lines[i].strip()
-        
-        if not line:
-            # Blank line - could be record separator
-            if current_record:
-                records.append(current_record)
-                current_record = {}
-            i += 1
-            continue
-        
-        # Check for truncation note
-        if "Some data did not fit this message" in line:
-            break
-        
-        # Check if this line starts a new record
-        if is_new_record_start(line, current_record):
-            # Save current record if exists
-            if current_record:
-                records.append(current_record)
-                current_record = {}
-        
-        # Parse key:value with emoji
-        emoji_pattern = re.compile(r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$')
-        match = emoji_pattern.match(line)
-        
-        if match:
-            emoji = match.group(1)
-            key_raw = match.group(2)
-            value = match.group(3).strip()
-            
-            if value:
-                field_name = get_field_name(key_raw)
-                
-                # Handle duplicate fields within same record
-                if field_name in current_record:
-                    count = 2
-                    while f"{field_name}{count}" in current_record:
-                        count += 1
-                    current_record[f"{field_name}{count}"] = value
-                else:
-                    current_record[field_name] = value
-            i += 1
-        else:
-            # Handle telephone without colon format
-            if line.startswith('📞'):
-                phone_match = re.match(r'📞+\s*(\d+)', line)
-                if phone_match:
-                    phone = phone_match.group(1)
-                    if "Phone" in current_record:
-                        count = 2
-                        while f"Phone{count}" in current_record:
-                            count += 1
-                        current_record[f"Phone{count}"] = phone
-                    else:
-                        current_record["Phone"] = phone
-                i += 1
-            elif line.startswith('📩'):
-                email_match = re.match(r'📩+\s*Email:\s*(.+?)$', line, re.IGNORECASE)
-                if not email_match:
-                    email_match = re.match(r'📩+\s*(.+?)$', line)
-                if email_match:
-                    email = email_match.group(1).strip()
-                    if "Email" in current_record:
-                        count = 2
-                        while f"Email{count}" in current_record:
-                            count += 1
-                        current_record[f"Email{count}"] = email
-                    else:
-                        current_record["Email"] = email
-                i += 1
-            else:
-                # Multiline continuation
-                if current_record and line:
-                    last_key = list(current_record.keys())[-1]
-                    current_record[last_key] = current_record[last_key] + " " + line
-                i += 1
-    
-    # Append last record
-    if current_record:
-        records.append(current_record)
-    
-    return records
-
-# =========================
-# MAIN PARSER
+# MAIN PARSER - PROPER RECORD GROUPING
 # =========================
 
 def parse_message(text):
@@ -230,48 +154,94 @@ def parse_message(text):
     
     lines = text.splitlines()
     
-    result = {}
-    
-    # Find source header
+    # Extract source title and description
     source_title = None
     source_description = ""
-    data_start = 0
+    data_start_idx = 0
     
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped and re.match(r'^[\U00010000-\U0010FFFF\u2600-\u27BF]', stripped):
             if not source_title:
                 source_title = stripped
-                data_start = i + 1
+                data_start_idx = i + 1
                 break
     
     if not source_title:
         source_title = "Data Source"
-        data_start = 0
+        data_start_idx = 0
     
-    # Extract description (lines before first data emoji)
-    description_lines = []
-    for i in range(data_start, len(lines)):
+    # Extract description (lines between title and first data line)
+    desc_lines = []
+    for i in range(data_start_idx, len(lines)):
         line = lines[i].strip()
         if not line:
             continue
         if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', line):
-            data_start = i
+            data_start_idx = i
             break
-        description_lines.append(line)
+        desc_lines.append(line)
     
-    source_description = " ".join(description_lines).strip()
+    source_description = " ".join(desc_lines).strip()
     
-    # Parse records with proper separation
-    records = parse_records(lines, data_start)
+    # Parse records - group from blank line to blank line
+    records = []
+    current_record = {}
+    i = data_start_idx
     
-    result["source1"] = {
-        "title": source_title,
-        "description": source_description,
-        "records": records
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Skip empty lines - blank line separates records
+        if not line:
+            if current_record:
+                records.append(current_record)
+                current_record = {}
+            i += 1
+            continue
+        
+        # Check for truncation
+        if "Some data did not fit this message" in line:
+            break
+        
+        # Parse the line
+        field_name, value = parse_line(line)
+        
+        if field_name and value:
+            # Handle duplicate fields in same record
+            if field_name in current_record:
+                count = 2
+                while f"{field_name}{count}" in current_record:
+                    count += 1
+                current_record[f"{field_name}{count}"] = value
+            else:
+                current_record[field_name] = value
+        else:
+            # If line doesn't parse but we have a record, could be multiline address
+            if current_record and line:
+                # Try to append to Adres field
+                if "Adres" in current_record:
+                    current_record["Adres"] = current_record["Adres"] + " " + line
+                elif len(current_record) > 0:
+                    last_key = list(current_record.keys())[-1]
+                    current_record[last_key] = current_record[last_key] + " " + line
+        
+        i += 1
+    
+    # Append last record if exists
+    if current_record:
+        records.append(current_record)
+    
+    # Clean up empty records
+    records = [r for r in records if r]
+    
+    return {
+        "source1": {
+            "title": source_title,
+            "description": source_description,
+            "records": records
+        }
     }
-    
-    return result
 
 # =========================
 # MAIN SEARCH
