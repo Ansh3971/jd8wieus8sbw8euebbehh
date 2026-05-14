@@ -1,7 +1,6 @@
 import os
 import re
 import asyncio
-from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -27,7 +26,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 # =========================
 
 app = FastAPI(
-    title="Telegram Bot API - Multi-Page Scraper"
+    title="Telegram Bot API"
 )
 
 # =========================
@@ -112,19 +111,23 @@ def get_field_name(raw_key):
 # =========================
 
 def parse_line(line):
+    """Extract field name and value from a line with emoji"""
     line = line.strip()
     if not line:
         return None, None
     
+    # Pattern: emoji(s) + field_name: value
     emoji_pattern = re.compile(r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$')
     match = emoji_pattern.match(line)
     
     if match:
+        emoji = match.group(1)
         key_raw = match.group(2)
         value = match.group(3).strip()
         field_name = get_field_name(key_raw)
         return field_name, value
     
+    # Handle Telephone/Email without colon
     if line.startswith('📞'):
         phone_match = re.search(r'(\d+)', line)
         if phone_match:
@@ -138,20 +141,23 @@ def parse_line(line):
     return None, None
 
 # =========================
-# PARSE SINGLE PAGE
+# MAIN PARSER - PROPER RECORD GROUPING
 # =========================
 
-def parse_page_text(text: str) -> List[Dict[str, Any]]:
+def parse_message(text):
     if not text:
-        return []
+        return {}
     
+    # Remove truncation note
     if "Some data did not fit this message" in text:
         text = text.split("Some data did not fit this message")[0]
     
     lines = text.splitlines()
     
-    data_start_idx = 0
+    # Extract source title and description
     source_title = None
+    source_description = ""
+    data_start_idx = 0
     
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -162,8 +168,11 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
                 break
     
     if not source_title:
+        source_title = "Data Source"
         data_start_idx = 0
     
+    # Extract description (lines between title and first data line)
+    desc_lines = []
     for i in range(data_start_idx, len(lines)):
         line = lines[i].strip()
         if not line:
@@ -171,7 +180,11 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
         if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', line):
             data_start_idx = i
             break
+        desc_lines.append(line)
     
+    source_description = " ".join(desc_lines).strip()
+    
+    # Parse records - group from blank line to blank line
     records = []
     current_record = {}
     i = data_start_idx
@@ -179,6 +192,7 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
     while i < len(lines):
         line = lines[i].strip()
         
+        # Skip empty lines - blank line separates records
         if not line:
             if current_record:
                 records.append(current_record)
@@ -186,12 +200,15 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
             i += 1
             continue
         
+        # Check for truncation
         if "Some data did not fit this message" in line:
             break
         
+        # Parse the line
         field_name, value = parse_line(line)
         
         if field_name and value:
+            # Handle duplicate fields in same record
             if field_name in current_record:
                 count = 2
                 while f"{field_name}{count}" in current_record:
@@ -200,7 +217,9 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
             else:
                 current_record[field_name] = value
         else:
+            # If line doesn't parse but we have a record, could be multiline address
             if current_record and line:
+                # Try to append to Adres field
                 if "Adres" in current_record:
                     current_record["Adres"] = current_record["Adres"] + " " + line
                 elif len(current_record) > 0:
@@ -209,94 +228,20 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
         
         i += 1
     
+    # Append last record if exists
     if current_record:
         records.append(current_record)
     
-    return [r for r in records if r]
-
-# =========================
-# GET SOURCE TITLE AND DESCRIPTION
-# =========================
-
-def get_source_metadata(text: str) -> tuple:
-    lines = text.splitlines()
+    # Clean up empty records
+    records = [r for r in records if r]
     
-    source_title = "Data Source"
-    description = ""
-    
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and re.match(r'^[\U00010000-\U0010FFFF\u2600-\u27BF]', stripped):
-            source_title = stripped
-            desc_lines = []
-            for j in range(i + 1, len(lines)):
-                next_line = lines[j].strip()
-                if not next_line:
-                    continue
-                if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', next_line):
-                    break
-                desc_lines.append(next_line)
-            description = " ".join(desc_lines)
-            break
-    
-    return source_title, description
-
-# =========================
-# GET CURRENT PAGE NUMBER
-# =========================
-
-def get_current_page(text: str):
-    match = re.search(r'(\d+)/(\d+)', text)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return None, None
-
-# =========================
-# CLICK NEXT BUTTON
-# =========================
-
-async def click_next_button(message):
-    if not message.reply_markup:
-        return None
-    
-    try:
-        rows = message.reply_markup.rows
-        for row in rows:
-            for button in row.buttons:
-                button_text = button.text
-                if button_text == '➡' or button_text == '→' or 'next' in button_text.lower():
-                    print(f"Clicking: {button_text}")
-                    await message.click(text=button_text)
-                    await asyncio.sleep(2)
-                    updated = await client.get_messages(BOT_USERNAME, ids=message.id)
-                    return updated
-    except Exception as e:
-        print(f"Error: {e}")
-    return None
-
-# =========================
-# WAIT FOR INITIAL REPLY
-# =========================
-
-async def wait_for_reply(sent_message, timeout=30):
-    sent_id = sent_message.id
-    start = asyncio.get_event_loop().time()
-    
-    while asyncio.get_event_loop().time() - start < timeout:
-        await asyncio.sleep(1)
-        messages = await client.get_messages(BOT_USERNAME, limit=10)
-        for msg in messages:
-            if msg.out:
-                continue
-            if not msg.message:
-                continue
-            if msg.id <= sent_id:
-                continue
-            if msg.message.strip() == sent_message.message.strip():
-                continue
-            if len(msg.message) > 50 or re.search(r'[📩📞🏘️]', msg.message):
-                return msg
-    return None
+    return {
+        "source1": {
+            "title": source_title,
+            "description": source_description,
+            "records": records
+        }
+    }
 
 # =========================
 # MAIN SEARCH
@@ -305,131 +250,93 @@ async def wait_for_reply(sent_message, timeout=30):
 @app.post("/search")
 async def search(data: Query):
     try:
-        print("\n" + "="*50)
-        print("NEW SEARCH")
-        print("="*50)
-        print(f"Query: {data.message}")
+        print("\n========== NEW REQUEST ==========")
+        print("Query:", data.message)
         
-        start_time = asyncio.get_event_loop().time()
+        sent = await client.send_message(
+            BOT_USERNAME,
+            data.message
+        )
         
-        # Send query
-        sent = await client.send_message(BOT_USERNAME, data.message)
-        print(f"Sent ID: {sent.id}")
+        print("Message Sent")
+        print("Sent ID:", sent.id)
         
-        # Wait for reply
-        current = await wait_for_reply(sent)
-        if not current:
-            return {"status": False, "error": "No reply received"}
+        target_message = None
         
-        print(f"First reply in {asyncio.get_event_loop().time() - start_time:.2f}s")
-        
-        # Collect all records
-        all_records = []
-        page_num = 1
-        source_title = None
-        source_description = None
-        max_pages = 50
-        
-        # Store previous page number to detect loop
-        previous_page = None
-        
-        while current and page_num <= max_pages:
-            print(f"\n--- Page {page_num} ---")
+        for i in range(30):
+            print(f"\nChecking Messages Attempt {i+1}")
             
-            # Get metadata
-            if source_title is None:
-                source_title, source_description = get_source_metadata(current.message)
-                print(f"Source: {source_title}")
+            await asyncio.sleep(2)
             
-            # Parse records
-            records = parse_page_text(current.message)
-            print(f"Records: {len(records)}")
-            all_records.extend(records)
+            messages = await client.get_messages(
+                BOT_USERNAME,
+                limit=15
+            )
             
-            # Get current page numbers
-            current_page, total_pages = get_current_page(current.message)
-            
-            if current_page and total_pages:
-                print(f"Page: {current_page}/{total_pages}")
+            for msg in messages:
+                if msg.out:
+                    continue
+                if not msg.message:
+                    continue
+                if msg.id <= sent.id:
+                    continue
+                if msg.message.strip() == data.message.strip():
+                    continue
                 
-                # ✅ CRITICAL: If we're on the last page, break out of loop
-                if current_page >= total_pages:
-                    print(f"✓ REACHED LAST PAGE ({current_page}/{total_pages}) - STOPPING")
-                    break
-            
-            # Check if we're stuck on same page
-            if previous_page is not None and current_page == previous_page:
-                print(f"⚠ Page not advancing ({current_page} -> {current_page}) - STOPPING")
+                target_message = msg
+                print("\nFOUND BOT REPLY")
+                print(target_message.message[:200] + "...")
                 break
             
-            previous_page = current_page
-            
-            # Try to click next button
-            print("Clicking next...")
-            next_msg = await click_next_button(current)
-            
-            if not next_msg:
-                print("No next button found - STOPPING")
+            if target_message:
                 break
-            
-            # Check if content changed
-            if next_msg.message == current.message:
-                print("Content didn't change - STOPPING")
-                break
-            
-            # Update for next iteration
-            current = next_msg
-            page_num += 1
         
-        # FALLBACK: If we didn't break properly but have page numbers, double-check
-        final_page, final_total = get_current_page(current.message) if current else (None, None)
-        if final_page and final_total and final_page >= final_total:
-            print(f"✓ Last page confirmed: {final_page}/{final_total}")
-        
-        total_time = asyncio.get_event_loop().time() - start_time
-        print(f"\n{'='*50}")
-        print(f"COMPLETE: {len(all_records)} records from {page_num} pages in {total_time:.2f}s")
-        print(f"{'='*50}")
-        
-        # Build response
-        result = {
-            "source1": {
-                "title": source_title or "Data Source",
-                "description": source_description or "",
-                "records": all_records
+        if not target_message:
+            return {
+                "status": False,
+                "error": "Bot reply timeout"
             }
-        }
+        
+        text = target_message.message
+        parsed = parse_message(text)
         
         return {
             "status": True,
             "query": data.message,
-            "data": result,
-            "meta": {
-                "pages_scraped": page_num,
-                "total_records": len(all_records),
-                "time_seconds": round(total_time, 2)
-            }
+            "data": parsed
         }
         
     except Exception as e:
-        print(f"\nERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"status": False, "error": str(e)}
+        print("\nERROR:")
+        print(str(e))
+        return {
+            "status": False,
+            "error": str(e)
+        }
 
 # =========================
-# TEST
+# BROWSER SEARCH
 # =========================
 
 @app.get("/test")
 async def test(q: str):
-    return await search(Query(message=q))
+    return await search(
+        Query(message=q)
+    )
+
+# =========================
+# ROOT
+# =========================
 
 @app.get("/")
 async def root():
-    return {"status": True, "message": "Multi-Page Scraper API"}
+    return {
+        "status": True,
+        "message": "API Running"
+    }
 
 # =========================
 # RUN
 # =========================
+
 # uvicorn main:app --host 0.0.0.0 --port $PORT
