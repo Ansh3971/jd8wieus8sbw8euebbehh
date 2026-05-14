@@ -237,17 +237,16 @@ def get_source_metadata(text: str) -> tuple:
     return source_title, description
 
 # =========================
-# GET PAGE NUMBERS (IMPROVED)
+# GET PAGE NUMBERS
 # =========================
 
 def get_page_numbers(text: str) -> tuple:
-    """Extract current and total pages from various formats"""
     patterns = [
-        r'(\d+)\s*/\s*(\d+)',           # 1/5 or 1 / 5
-        r'Page\s*(\d+)\s*/\s*(\d+)',    # Page 1/5
-        r'(\d+)\s*of\s*(\d+)',          # 1 of 5
-        r'ページ\s*(\d+)\s*/\s*(\d+)',   # Japanese format
-        r'(\d+)\s*-\s*(\d+)',           # 1-5 format
+        r'(\d+)\s*/\s*(\d+)',
+        r'Page\s*(\d+)\s*/\s*(\d+)',
+        r'(\d+)\s*of\s*(\d+)',
+        r'ページ\s*(\d+)\s*/\s*(\d+)',
+        r'(\d+)\s*-\s*(\d+)',
     ]
     
     for pattern in patterns:
@@ -258,15 +257,13 @@ def get_page_numbers(text: str) -> tuple:
     return None, None
 
 # =========================
-# FIND NEXT BUTTON (IMPROVED)
+# FIND NEXT BUTTON
 # =========================
 
 async def find_next_button(message):
-    """Find next button with multiple text variations"""
     if not message.reply_markup:
         return None
     
-    # Possible next button texts
     next_texts = ['➡', '→', '›', '»', 'Next', 'next', 'NEXT', '>', '>>']
     
     try:
@@ -283,18 +280,16 @@ async def find_next_button(message):
     return None
 
 # =========================
-# CLICK NEXT BUTTON (RELIABLE)
+# CLICK NEXT BUTTON
 # =========================
 
 async def click_next_button(message, retries=3):
-    """Click next button with retry logic"""
     if not message.reply_markup:
         print("No reply_markup on message")
         return None
     
     for attempt in range(retries):
         try:
-            # Find the next button
             next_button_info = await find_next_button(message)
             if not next_button_info:
                 print(f"Next button not found (attempt {attempt + 1})")
@@ -305,22 +300,16 @@ async def click_next_button(message, retries=3):
             button_text = button.text
             print(f"Found next button: '{button_text}'")
             
-            # Store current message content for comparison
             old_content = message.message
             
-            # Click the button
             await message.click(text=button_text)
-            
-            # Wait for edit to take effect
             await asyncio.sleep(0.8)
             
-            # Fetch updated message
             updated_message = await client.get_messages(
                 BOT_USERNAME,
                 ids=message.id
             )
             
-            # Verify content actually changed
             if updated_message and updated_message.message != old_content:
                 print(f"Page changed successfully")
                 return updated_message
@@ -339,46 +328,72 @@ async def click_next_button(message, retries=3):
 # =========================
 
 async def has_next_button(message) -> bool:
-    """Check if next button exists"""
     next_button = await find_next_button(message)
     return next_button is not None
 
 # =========================
-# WAIT FOR INITIAL REPLY
+# WAIT FOR REPLY - FIXED TO GET CORRECT MESSAGE
 # =========================
 
-async def wait_for_reply(sent_message, timeout=12):
-    """Wait for bot reply with polling"""
+async def wait_for_reply(sent_message, query_text, timeout=15):
+    """Wait for bot reply - only return message that is a response to our query"""
     start_time = asyncio.get_event_loop().time()
-    last_msg_id = sent_message.id
+    sent_id = sent_message.id
+    sent_text = sent_message.message.strip()
     
-    # Check every 0.5 seconds
+    print(f"Waiting for reply to message ID: {sent_id}")
+    print(f"Query text: {sent_text}")
+    
     while asyncio.get_event_loop().time() - start_time < timeout:
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.8)
         
+        # Get recent messages
         messages = await client.get_messages(
             BOT_USERNAME,
-            limit=5
+            limit=10
         )
         
         for msg in messages:
+            # Skip our own messages
             if msg.out:
                 continue
+            
+            # Skip empty messages
             if not msg.message:
                 continue
-            if msg.id <= last_msg_id:
-                continue
-            if msg.message.strip() == sent_message.message.strip():
+            
+            # Must be newer than our sent message
+            if msg.id <= sent_id:
                 continue
             
-            # Check if this looks like a valid reply (has data or emojis)
-            if len(msg.message) > 50 or re.search(r'[📩📞🏘️🃏👤👨🗺️]', msg.message):
+            # Skip if it's just repeating our query
+            if msg.message.strip() == sent_text:
+                continue
+            
+            # Check if this message contains data (has emojis or is long)
+            has_data_emojis = re.search(r'[📩📞🏘️🃏👤👨🗺️💾🎲🚗🧹🥻🚁🎰📱🛏]', msg.message)
+            is_long = len(msg.message) > 100
+            
+            if has_data_emojis or is_long:
+                print(f"Found valid reply message ID: {msg.id}")
+                print(f"Reply preview: {msg.message[:150]}...")
                 return msg
+        
+        # Also check if the sent message itself was edited (bot might edit it directly)
+        try:
+            current_sent = await client.get_messages(BOT_USERNAME, ids=sent_id)
+            if current_sent and current_sent.message != sent_text:
+                if len(current_sent.message) > 100:
+                    print(f"Sent message was edited with reply data (ID: {sent_id})")
+                    return current_sent
+        except:
+            pass
     
+    print("Timeout waiting for reply")
     return None
 
 # =========================
-# MAIN SEARCH WITH RELIABLE PAGINATION
+# MAIN SEARCH WITH RELIABLE MESSAGE SELECTION
 # =========================
 
 @app.post("/search")
@@ -397,13 +412,13 @@ async def search(data: Query):
         
         print(f"Message Sent, ID: {sent.id}")
         
-        # Wait for reply
-        target_message = await wait_for_reply(sent, timeout=12)
+        # Wait for correct reply
+        target_message = await wait_for_reply(sent, data.message, timeout=15)
         
         if not target_message:
             return {
                 "status": False,
-                "error": "Bot reply timeout"
+                "error": "Bot reply timeout - no valid response received"
             }
         
         print(f"First reply received in {asyncio.get_event_loop().time() - start_total:.2f}s")
@@ -418,9 +433,6 @@ async def search(data: Query):
         previous_contents = set()
         stuck_count = 0
         max_stuck = 3
-        
-        # Store first page content for comparison
-        first_page_content = current_message.message
         
         while current_message and page_num <= max_pages:
             page_start = asyncio.get_event_loop().time()
@@ -479,14 +491,12 @@ async def search(data: Query):
             # Verify page actually changed
             if next_message.message == current_message.message:
                 print("Message content unchanged after click. May be last page.")
-                # Check if we can detect page number change
                 new_page, _ = get_page_numbers(next_message.message)
                 old_page, _ = get_page_numbers(current_message.message)
                 if new_page and old_page and new_page == old_page:
                     print("Page number didn't change. Stopping.")
                     break
                 elif not new_page:
-                    # If can't detect page number but content same, stop
                     break
             
             current_message = next_message
@@ -542,12 +552,11 @@ async def root():
         "status": True,
         "message": "Reliable Multi-Page Telegram Bot Scraper API",
         "features": [
-            "Multiple next button text detection (➡, →, ›, », Next, >)",
-            "Flexible page number extraction (1/5, Page 1/5, 1 of 5)",
-            "Retry logic for clicking",
-            "Content change verification",
-            "Loop detection",
-            "Stuck prevention"
+            "Correct message selection based on sent message ID",
+            "Only returns messages newer than user query",
+            "Filters out echo/repeat messages",
+            "Checks for data emojis to validate bot reply",
+            "Also checks if sent message was edited by bot"
         ]
     }
 
