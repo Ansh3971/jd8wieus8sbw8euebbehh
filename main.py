@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 
 from fastapi import FastAPI
@@ -66,36 +67,58 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
+# CLEAN KEY
+# =========================
+
+def clean_key(key):
+
+    key = re.sub(
+        r'[^a-zA-Z0-9 ]',
+        '',
+        key
+    )
+
+    key = key.strip()
+
+    words = key.split()
+
+    return ''.join(
+        word.capitalize()
+        for word in words
+    )
+
+# =========================
 # ADVANCED GROUPED PARSER
 # =========================
 
 def parse_message(text):
 
+    result = {
+        "raw": text,
+        "records": []
+    }
+
     if not text:
-
-        return {
-            "raw": "",
-            "records": []
-        }
-
-    # CLEAN TEXT
-    text = (
-        str(text)
-        .replace("\r", "")
-        .strip()
-    )
+        return result
 
     lines = text.splitlines()
 
-    records = []
-
     current = {}
 
-    for line in lines:
+    record_start_keys = [
+        "Email",
+        "Phone",
+        "Telephone",
+        "Username",
+        "User",
+        "FullName",
+        "Name"
+    ]
 
-        line = line.strip()
+    for raw_line in lines:
 
-        # SKIP EMPTY
+        line = raw_line.strip()
+
         if not line:
             continue
 
@@ -110,102 +133,47 @@ def parse_message(text):
                 1
             )
 
-            key = (
+            key = clean_key(
                 parts[0]
-                .strip()
             )
 
-            value = (
-                parts[1]
-                .strip()
-            )
+            value = parts[1].strip()
 
-            # SKIP EMPTY VALUE
             if not value:
                 continue
 
-            # REMOVE EMOJIS
-            for sym in [
-                "📞",
-                "📩",
-                "👤",
-                "🏘️",
-                "👨",
-                "🗺️",
-                "🎯",
-                "📆",
-                "🃏",
-                "🌃",
-                "🔑",
-                "🔐",
-                "💶",
-                "💸",
-                "🚻",
-                "🌐",
-                "🔎",
-                "🏢",
-                "🗾"
-            ]:
-
-                key = key.replace(
-                    sym,
-                    ""
-                )
-
-            key = key.strip()
-
-            lower = key.lower()
-
             # =====================
-            # NEW RECORD DETECTION
+            # NEW RECORD
             # =====================
 
             if (
-                lower in [
-                    "email",
-                    "mail",
-                    "telephone",
-                    "phone",
-                    "mobile",
-                    "username",
-                    "user",
-                    "full name",
-                    "name"
-                ]
+                key in record_start_keys
                 and current
             ):
 
-                records.append(
+                result["records"].append(
                     current
                 )
 
                 current = {}
 
             # =====================
-            # MULTIPLE VALUES
+            # DUPLICATE KEYS
             # =====================
 
             if key in current:
 
-                if isinstance(
-                    current[key],
-                    list
+                count = 2
+
+                while (
+                    f"{key}{count}"
+                    in current
                 ):
+                    count += 1
 
-                    if value not in current[key]:
-
-                        current[key].append(
-                            value
-                        )
-
-                else:
-
-                    if current[key] != value:
-
-                        current[key] = [
-                            current[key],
-                            value
-                        ]
+                current[
+                    f"{key}{count}"
+                ] = value
 
             else:
 
@@ -214,14 +182,14 @@ def parse_message(text):
         else:
 
             # =====================
-            # RAW TEXT
+            # DESCRIPTION TEXT
             # =====================
 
-            if "_text" not in current:
+            if "_description" not in current:
 
-                current["_text"] = []
+                current["_description"] = []
 
-            current["_text"].append(
+            current["_description"].append(
                 line
             )
 
@@ -231,41 +199,19 @@ def parse_message(text):
 
     if current:
 
-        records.append(current)
+        result["records"].append(
+            current
+        )
 
     # =====================
-    # CLEAN RECORDS
+    # TOTAL
     # =====================
 
-    cleaned = []
+    result["total_records"] = len(
+        result["records"]
+    )
 
-    for rec in records:
-
-        clean_rec = {}
-
-        for k, v in rec.items():
-
-            if not v:
-                continue
-
-            clean_rec[k] = v
-
-        if clean_rec:
-
-            cleaned.append(
-                clean_rec
-            )
-
-    return {
-
-        "raw": text,
-
-        "total_records": len(
-            cleaned
-        ),
-
-        "records": cleaned
-    }
+    return result
 
 # =========================
 # MAIN SEARCH
@@ -307,8 +253,6 @@ async def search(data: Query):
                 BOT_USERNAME,
                 limit=15
             )
-
-            print("Messages Found:", len(messages))
 
             for msg in messages:
 
@@ -354,7 +298,7 @@ async def search(data: Query):
             }
 
         # =====================
-        # GET TEXT
+        # TEXT
         # =====================
 
         text = target_message.message
