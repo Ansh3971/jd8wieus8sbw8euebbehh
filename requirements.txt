@@ -2,5 +2,4 @@ fastapi
 uvicorn
 telethon
 python-dotenv
-beautifulsoup4
 pydantic
