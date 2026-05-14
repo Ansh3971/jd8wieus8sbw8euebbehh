@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.events import CallbackQuery
 
 from dotenv import load_dotenv
 
@@ -221,69 +220,6 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
     return [r for r in records if r]
 
 # =========================
-# EXTRACT PAGE INFO
-# =========================
-
-def extract_page_info(text: str) -> Optional[str]:
-    """Extract current page from text like '1/5'"""
-    match = re.search(r'(\d+)/(\d+)', text)
-    if match:
-        return match.group(1), match.group(2)
-    return None, None
-
-# =========================
-# CHECK FOR NEXT BUTTON
-# =========================
-
-async def has_next_button(message) -> bool:
-    """Check if message has next page button (➡)"""
-    if not message.reply_markup:
-        return False
-    
-    try:
-        rows = message.reply_markup.rows
-        for row in rows:
-            for button in row.buttons:
-                if button.text == '➡' or button.text == 'Next' or '➡' in button.text:
-                    return True
-    except:
-        pass
-    
-    return False
-
-# =========================
-# CLICK NEXT BUTTON
-# =========================
-
-async def click_next_button(message) -> Optional[Any]:
-    """Click the next page button and return the updated message"""
-    if not message.reply_markup:
-        return None
-    
-    try:
-        rows = message.reply_markup.rows
-        for row in rows:
-            for button in row.buttons:
-                if button.text == '➡' or button.text == 'Next' or '➡' in button.text:
-                    # Click the button
-                    await button.click()
-                    
-                    # Wait for message to update
-                    await asyncio.sleep(2)
-                    
-                    # Get the updated message
-                    updated_msg = await client.get_messages(
-                        BOT_USERNAME,
-                        ids=message.id
-                    )
-                    
-                    return updated_msg
-    except Exception as e:
-        print(f"Error clicking next button: {e}")
-    
-    return None
-
-# =========================
 # GET SOURCE TITLE AND DESCRIPTION
 # =========================
 
@@ -311,6 +247,82 @@ def get_source_metadata(text: str) -> tuple:
             break
     
     return source_title, description
+
+# =========================
+# CLICK NEXT BUTTON - FIXED
+# =========================
+
+async def click_next_button(message) -> Optional[Any]:
+    """Click the next page button (➡) and return the updated (edited) message"""
+    if not message.reply_markup:
+        print("No reply_markup on message")
+        return None
+    
+    try:
+        # Get all buttons
+        rows = message.reply_markup.rows
+        
+        for row_idx, row in enumerate(rows):
+            for col_idx, button in enumerate(row.buttons):
+                # Look for next button (➡ or forward arrow)
+                button_text = button.text
+                print(f"Found button: '{button_text}'")
+                
+                if button_text == '➡' or button_text == '→' or 'next' in button_text.lower():
+                    print(f"Clicking button: {button_text}")
+                    
+                    # Correct way to click button in Telethon
+                    # Use message.click() with button text or index
+                    await message.click(text=button_text)
+                    
+                    # Wait for message to be edited
+                    await asyncio.sleep(3)
+                    
+                    # Get the updated message (same ID, content changed)
+                    updated_message = await client.get_messages(
+                        BOT_USERNAME,
+                        ids=message.id
+                    )
+                    
+                    return updated_message
+                    
+    except Exception as e:
+        print(f"Error clicking next button: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return None
+
+# =========================
+# CHECK FOR NEXT BUTTON
+# =========================
+
+async def has_next_button(message) -> bool:
+    """Check if message has next page button (➡)"""
+    if not message.reply_markup:
+        return False
+    
+    try:
+        rows = message.reply_markup.rows
+        for row in rows:
+            for button in row.buttons:
+                if button.text == '➡' or button.text == '→' or 'next' in button.text.lower():
+                    return True
+    except:
+        pass
+    
+    return False
+
+# =========================
+# GET CURRENT PAGE NUMBER
+# =========================
+
+def get_current_page(text: str) -> Optional[int]:
+    """Extract current page number from text like '1/5'"""
+    match = re.search(r'(\d+)/(\d+)', text)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None, None
 
 # =========================
 # MAIN SEARCH WITH PAGINATION
@@ -372,41 +384,64 @@ async def search(data: Query):
         page_num = 1
         source_title = None
         source_description = None
+        max_pages = 50  # Safety limit
+        seen_messages = set()  # Avoid duplicate processing
         
-        while current_message:
+        while current_message and page_num <= max_pages:
             print(f"\n--- Processing Page {page_num} ---")
+            
+            # Add to seen to detect loops
+            msg_hash = hash(current_message.message[:100])
+            if msg_hash in seen_messages and page_num > 1:
+                print("Detected loop - same content. Stopping.")
+                break
+            seen_messages.add(msg_hash)
             
             # Extract source metadata from first page only
             if source_title is None:
                 source_title, source_description = get_source_metadata(current_message.message)
+                print(f"Source Title: {source_title}")
             
             # Parse records from current page
             page_records = parse_page_text(current_message.message)
             print(f"Found {len(page_records)} records on page {page_num}")
             all_records.extend(page_records)
             
-            # Check for next page button
+            # Get current page number if available
+            current_page, total_pages = get_current_page(current_message.message)
+            if current_page:
+                print(f"Page {current_page}/{total_pages}")
+            
+            # Check for next button
             has_next = await has_next_button(current_message)
             
             if not has_next:
                 print("No next page button found. Done.")
                 break
             
-            # Click next button
+            # Also stop if we've reached total pages
+            if total_pages and current_page and current_page >= total_pages:
+                print(f"Reached last page ({current_page}/{total_pages}). Done.")
+                break
+            
+            # Click next button (message will be edited)
             print("Clicking next page button...")
             next_message = await click_next_button(current_message)
             
-            if not next_message or next_message.message == current_message.message:
-                print("No change after clicking next. Done.")
+            if not next_message:
+                print("Failed to get next page. Stopping.")
+                break
+            
+            # Check if content changed (if same, we're stuck)
+            if next_message.message == current_message.message:
+                print("Message content didn't change after clicking. Stopping.")
                 break
             
             current_message = next_message
             page_num += 1
             
-            # Safety limit - prevent infinite loops
-            if page_num > 50:
-                print("Reached maximum page limit (50). Stopping.")
-                break
+            # Small delay to be respectful
+            await asyncio.sleep(1)
         
         print(f"\n=== TOTAL: {len(all_records)} records collected from {page_num} pages ===")
         
@@ -432,6 +467,8 @@ async def search(data: Query):
     except Exception as e:
         print("\nERROR:")
         print(str(e))
+        import traceback
+        traceback.print_exc()
         return {
             "status": False,
             "error": str(e)
@@ -456,9 +493,10 @@ async def root():
         "message": "Multi-Page Telegram Bot Scraper API Running",
         "features": [
             "Automatic pagination detection",
-            "Auto-click next page button (➡)",
+            "Auto-click next page button (➡) using message.click()",
+            "Handles message editing (same ID, content changes)",
             "Merges all pages into single response",
-            "Returns complete aggregated data"
+            "Loop detection safety"
         ]
     }
 
