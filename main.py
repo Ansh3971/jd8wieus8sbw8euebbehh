@@ -27,7 +27,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 # =========================
 
 app = FastAPI(
-    title="Telegram Bot API - Fast Multi-Page Scraper"
+    title="Telegram Bot API - Reliable Multi-Page Scraper"
 )
 
 # =========================
@@ -242,43 +242,135 @@ def get_source_metadata(text: str) -> tuple:
     return source_title, description
 
 # =========================
-# CLICK NEXT BUTTON (PRESERVED WORKING LOGIC - ONLY SLEEP REDUCED)
+# WAIT FOR FINAL MESSAGE (FIX PROBLEM 1)
 # =========================
 
-async def click_next_button(message) -> Optional[Any]:
+async def wait_for_final_message(sent_message, timeout=12):
+    """Wait for bot's FINAL edited message, not the intermediate one"""
+    sent_id = sent_message.id
+    last_content = ""
+    stable_count = 0
+    seen_messages = []
+    
+    for attempt in range(15):  # 15 attempts
+        await asyncio.sleep(0.8)
+        
+        # Get messages after sent
+        messages = await client.get_messages(BOT_USERNAME, limit=10)
+        
+        # Look for messages from bot after our sent message
+        for msg in messages:
+            if msg.out:
+                continue
+            if not msg.message:
+                continue
+            if msg.id <= sent_id:
+                continue
+            if msg.message.strip() == sent_message.message.strip():
+                continue
+            
+            # Check if this is data message (has emojis or phone numbers)
+            if re.search(r'[📩📞🏘️🃏👤👨🗺️💾]', msg.message) or len(msg.message) > 200:
+                # If same content seen twice, it's stable
+                current_content = msg.message
+                msg_id = msg.id
+                
+                # Track seen messages
+                seen_messages.append((msg_id, current_content))
+                
+                # Check if last 2 are same
+                if len(seen_messages) >= 2 and seen_messages[-1][1] == seen_messages[-2][1]:
+                    print(f"Message stable - using message ID: {msg_id}")
+                    return msg
+                
+                # Also check if content has page numbers and has settled
+                if re.search(r'\d+/\d+', current_content):
+                    # Wait a bit more for page to settle
+                    await asyncio.sleep(1)
+                    # Re-fetch same message to see if changed
+                    refreshed = await client.get_messages(BOT_USERNAME, ids=msg_id)
+                    if refreshed and refreshed.message == current_content:
+                        print(f"Message stable (page indicator) - ID: {msg_id}")
+                        return refreshed
+    
+    # Return the last data message found
+    if seen_messages:
+        return seen_messages[-1][0] if isinstance(seen_messages[-1][0], int) else seen_messages[-1]
+    
+    return None
+
+# =========================
+# CLICK NEXT BUTTON WITH VERIFICATION (FIX PROBLEM 2)
+# =========================
+
+async def click_next_with_verification(message, current_page_num):
+    """Click next and verify page actually increased"""
     if not message.reply_markup:
-        print("No reply_markup on message")
         return None
     
     try:
         rows = message.reply_markup.rows
         
-        for row_idx, row in enumerate(rows):
-            for col_idx, button in enumerate(row.buttons):
+        for row in rows:
+            for button in row.buttons:
                 button_text = button.text
-                print(f"Found button: '{button_text}'")
                 
                 if button_text == '➡' or button_text == '→' or 'next' in button_text.lower():
-                    print(f"Clicking button: {button_text}")
+                    print(f"Clicking: '{button_text}'")
                     
+                    # Store current page number
+                    old_page, total = get_current_page(message.message)
+                    print(f"Current page: {old_page}/{total}")
+                    
+                    # Click the button
                     await message.click(text=button_text)
                     
-                    # OPTIMIZED: Reduced from 3 seconds to 1 second
-                    await asyncio.sleep(1)
+                    # Wait for edit
+                    await asyncio.sleep(1.5)
                     
-                    updated_message = await client.get_messages(
-                        BOT_USERNAME,
-                        ids=message.id
-                    )
+                    # Get updated message
+                    updated = await client.get_messages(BOT_USERNAME, ids=message.id)
                     
-                    return updated_message
+                    if updated:
+                        new_page, total = get_current_page(updated.message)
+                        print(f"New page after click: {new_page}/{total}")
+                        
+                        # Verify page increased
+                        if new_page and old_page and new_page > old_page:
+                            print("✓ Page advanced successfully")
+                            return updated
+                        elif new_page and old_page and new_page == old_page:
+                            print("⚠ Page didn't change, waiting longer...")
+                            await asyncio.sleep(2)
+                            # Try again
+                            updated2 = await client.get_messages(BOT_USERNAME, ids=message.id)
+                            if updated2:
+                                new_page2, _ = get_current_page(updated2.message)
+                                if new_page2 and new_page2 > old_page:
+                                    print("✓ Page advanced after longer wait")
+                                    return updated2
+                        else:
+                            # If no page numbers, check content change
+                            if updated.message != message.message:
+                                print("✓ Content changed (no page numbers)")
+                                return updated
+                    
+                    return updated
                     
     except Exception as e:
-        print(f"Error clicking next button: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error: {e}")
     
     return None
+
+# =========================
+# GET CURRENT PAGE NUMBER
+# =========================
+
+def get_current_page(text: str):
+    match = re.search(r'(\d+)/(\d+)', text)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None, None
 
 # =========================
 # CHECK FOR NEXT BUTTON
@@ -300,134 +392,93 @@ async def has_next_button(message) -> bool:
     return False
 
 # =========================
-# GET CURRENT PAGE NUMBER
-# =========================
-
-def get_current_page(text: str) -> Optional[int]:
-    match = re.search(r'(\d+)/(\d+)', text)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return None, None
-
-# =========================
-# MAIN SEARCH WITH OPTIMIZED SPEED
+# MAIN SEARCH
 # =========================
 
 @app.post("/search")
 async def search(data: Query):
     try:
-        print("\n========== NEW REQUEST ==========")
-        print("Query:", data.message)
+        print("\n" + "="*50)
+        print("NEW SEARCH")
+        print("="*50)
+        print(f"Query: {data.message}")
         
         start_time = asyncio.get_event_loop().time()
         
-        # Send initial query
-        sent = await client.send_message(
-            BOT_USERNAME,
-            data.message
-        )
+        # Send query
+        sent = await client.send_message(BOT_USERNAME, data.message)
+        print(f"Sent message ID: {sent.id}")
         
-        print("Message Sent, ID:", sent.id)
-        
-        # OPTIMIZED: Faster initial reply detection
-        target_message = None
-        
-        # Check every 0.5 seconds instead of 2 seconds
-        for i in range(20):  # 20 * 0.5 = 10 seconds max
-            await asyncio.sleep(0.5)
-            
-            # OPTIMIZED: Get only last 5 messages instead of 15
-            messages = await client.get_messages(
-                BOT_USERNAME,
-                limit=5
-            )
-            
-            for msg in messages:
-                if msg.out:
-                    continue
-                if not msg.message:
-                    continue
-                if msg.id <= sent.id:
-                    continue
-                if msg.message.strip() == data.message.strip():
-                    continue
-                
-                target_message = msg
-                print("\nFOUND BOT REPLY")
-                print(msg.message[:200] + "...")
-                break
-            
-            if target_message:
-                break
+        # Wait for FINAL message (not intermediate)
+        target_message = await wait_for_final_message(sent, timeout=15)
         
         if not target_message:
-            return {
-                "status": False,
-                "error": "Bot reply timeout"
-            }
+            return {"status": False, "error": "No valid bot reply received"}
         
-        print(f"First reply received in {asyncio.get_event_loop().time() - start_time:.2f}s")
+        print(f"Final message received in {asyncio.get_event_loop().time() - start_time:.2f}s")
         
-        # Collect all records from all pages
+        # Collect all records
         all_records = []
         current_message = target_message
         page_num = 1
         source_title = None
         source_description = None
         max_pages = 50
-        seen_messages = set()
+        seen_page_numbers = set()
         
         while current_message and page_num <= max_pages:
-            page_start = asyncio.get_event_loop().time()
-            print(f"\n--- Processing Page {page_num} ---")
+            print(f"\n--- Page {page_num} ---")
             
-            msg_hash = hash(current_message.message[:100])
-            if msg_hash in seen_messages and page_num > 1:
-                print("Detected loop - same content. Stopping.")
-                break
-            seen_messages.add(msg_hash)
-            
+            # Get metadata
             if source_title is None:
                 source_title, source_description = get_source_metadata(current_message.message)
-                print(f"Source Title: {source_title}")
+                print(f"Source: {source_title}")
             
+            # Parse records
             page_records = parse_page_text(current_message.message)
-            print(f"Found {len(page_records)} records on page {page_num}")
+            print(f"Records on this page: {len(page_records)}")
             all_records.extend(page_records)
             
+            # Get page numbers
             current_page, total_pages = get_current_page(current_message.message)
-            if current_page:
+            if current_page and total_pages:
                 print(f"Page {current_page}/{total_pages}")
+                seen_page_numbers.add(current_page)
             
+            # Check for next button
             has_next = await has_next_button(current_message)
             
             if not has_next:
-                print("No next page button found. Done.")
+                print("No next button - scraping complete")
                 break
             
             if total_pages and current_page and current_page >= total_pages:
-                print(f"Reached last page ({current_page}/{total_pages}). Done.")
+                print(f"Reached last page ({current_page}/{total_pages})")
                 break
             
-            print("Clicking next page button...")
-            next_message = await click_next_button(current_message)
+            # Click next with verification
+            print("Clicking next...")
+            next_message = await click_next_with_verification(current_message, current_page)
             
             if not next_message:
-                print("Failed to get next page. Stopping.")
+                print("Failed to get next page")
                 break
             
-            if next_message.message == current_message.message:
-                print("Message content didn't change after clicking. Stopping.")
+            # Verify page changed
+            new_page, _ = get_current_page(next_message.message)
+            if new_page and current_page and new_page <= current_page:
+                print(f"Page didn't advance ({current_page} -> {new_page}), stopping")
                 break
             
             current_message = next_message
             page_num += 1
             
-            # OPTIMIZED: Reduced delay between pages
             await asyncio.sleep(0.3)
         
         total_time = asyncio.get_event_loop().time() - start_time
-        print(f"\n=== TOTAL: {len(all_records)} records from {page_num} pages in {total_time:.2f}s ===")
+        print(f"\n{'='*50}")
+        print(f"DONE: {len(all_records)} records from {page_num} pages in {total_time:.2f}s")
+        print(f"{'='*50}")
         
         result = {
             "source1": {
@@ -449,14 +500,10 @@ async def search(data: Query):
         }
         
     except Exception as e:
-        print("\nERROR:")
-        print(str(e))
+        print(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
-        return {
-            "status": False,
-            "error": str(e)
-        }
+        return {"status": False, "error": str(e)}
 
 # =========================
 # TEST ENDPOINT
@@ -474,13 +521,12 @@ async def test(q: str):
 async def root():
     return {
         "status": True,
-        "message": "FAST Multi-Page Telegram Bot Scraper API",
-        "optimizations": [
-            "Initial reply poll: 2s → 0.5s intervals",
-            "After click wait: 3s → 1s",
-            "Between pages delay: 1s → 0.3s",
-            "Messages fetched: 15 → 5 per poll",
-            "Same working pagination logic preserved"
+        "message": "Reliable Multi-Page Telegram Bot Scraper API",
+        "fixes": [
+            "wait_for_final_message() - waits for message to stop changing before parsing",
+            "click_next_with_verification() - verifies page number actually increased",
+            "Stable content detection (same message twice = stable)",
+            "Page number validation after click"
         ]
     }
 
