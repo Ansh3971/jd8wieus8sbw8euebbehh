@@ -1,13 +1,14 @@
 import os
 import re
 import asyncio
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import Message
 
 from dotenv import load_dotenv
 
@@ -218,7 +219,7 @@ def parse_page_text(text: str) -> List[Dict[str, Any]]:
 # GET SOURCE TITLE AND DESCRIPTION
 # =========================
 
-def get_source_metadata(text: str) -> tuple:
+def get_source_metadata(text: str) -> Tuple[str, str]:
     lines = text.splitlines()
     
     source_title = "Data Source"
@@ -242,15 +243,13 @@ def get_source_metadata(text: str) -> tuple:
     return source_title, description
 
 # =========================
-# WAIT FOR FINAL MESSAGE (FIX PROBLEM 1)
+# WAIT FOR FINAL MESSAGE - FIXED
 # =========================
 
-async def wait_for_final_message(sent_message, timeout=12):
+async def wait_for_final_message(sent_message: Message, timeout: int = 15) -> Optional[Message]:
     """Wait for bot's FINAL edited message, not the intermediate one"""
     sent_id = sent_message.id
-    last_content = ""
-    stable_count = 0
-    seen_messages = []
+    seen_messages: List[Tuple[int, str]] = []  # List of (message_id, content)
     
     for attempt in range(15):  # 15 attempts
         await asyncio.sleep(0.8)
@@ -271,21 +270,22 @@ async def wait_for_final_message(sent_message, timeout=12):
             
             # Check if this is data message (has emojis or phone numbers)
             if re.search(r'[📩📞🏘️🃏👤👨🗺️💾]', msg.message) or len(msg.message) > 200:
-                # If same content seen twice, it's stable
                 current_content = msg.message
                 msg_id = msg.id
                 
-                # Track seen messages
+                # Track seen messages (keep only last 3)
                 seen_messages.append((msg_id, current_content))
+                if len(seen_messages) > 3:
+                    seen_messages.pop(0)
                 
-                # Check if last 2 are same
+                # Check if last 2 messages have same content (stable)
                 if len(seen_messages) >= 2 and seen_messages[-1][1] == seen_messages[-2][1]:
                     print(f"Message stable - using message ID: {msg_id}")
+                    # Return the actual message object, not just ID
                     return msg
                 
                 # Also check if content has page numbers and has settled
                 if re.search(r'\d+/\d+', current_content):
-                    # Wait a bit more for page to settle
                     await asyncio.sleep(1)
                     # Re-fetch same message to see if changed
                     refreshed = await client.get_messages(BOT_USERNAME, ids=msg_id)
@@ -293,17 +293,50 @@ async def wait_for_final_message(sent_message, timeout=12):
                         print(f"Message stable (page indicator) - ID: {msg_id}")
                         return refreshed
     
-    # Return the last data message found
+    # Return the last data message found if any
     if seen_messages:
-        return seen_messages[-1][0] if isinstance(seen_messages[-1][0], int) else seen_messages[-1]
+        last_msg_id = seen_messages[-1][0]
+        last_msg = await client.get_messages(BOT_USERNAME, ids=last_msg_id)
+        if last_msg:
+            print(f"Returning last available message: {last_msg_id}")
+            return last_msg
     
     return None
 
 # =========================
-# CLICK NEXT BUTTON WITH VERIFICATION (FIX PROBLEM 2)
+# GET CURRENT PAGE NUMBER
 # =========================
 
-async def click_next_with_verification(message, current_page_num):
+def get_current_page(text: str) -> Tuple[Optional[int], Optional[int]]:
+    match = re.search(r'(\d+)/(\d+)', text)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None, None
+
+# =========================
+# CHECK FOR NEXT BUTTON
+# =========================
+
+async def has_next_button(message: Message) -> bool:
+    if not message.reply_markup:
+        return False
+    
+    try:
+        rows = message.reply_markup.rows
+        for row in rows:
+            for button in row.buttons:
+                if button.text == '➡' or button.text == '→' or 'next' in button.text.lower():
+                    return True
+    except:
+        pass
+    
+    return False
+
+# =========================
+# CLICK NEXT BUTTON WITH VERIFICATION - FIXED
+# =========================
+
+async def click_next_with_verification(message: Message, current_page_num: Optional[int]) -> Optional[Message]:
     """Click next and verify page actually increased"""
     if not message.reply_markup:
         return None
@@ -331,65 +364,41 @@ async def click_next_with_verification(message, current_page_num):
                     # Get updated message
                     updated = await client.get_messages(BOT_USERNAME, ids=message.id)
                     
-                    if updated:
-                        new_page, total = get_current_page(updated.message)
-                        print(f"New page after click: {new_page}/{total}")
-                        
-                        # Verify page increased
-                        if new_page and old_page and new_page > old_page:
-                            print("✓ Page advanced successfully")
+                    if not updated:
+                        print("No updated message found")
+                        return None
+                    
+                    new_page, total = get_current_page(updated.message)
+                    print(f"New page after click: {new_page}/{total}")
+                    
+                    # Verify page increased
+                    if new_page and old_page and new_page > old_page:
+                        print("✓ Page advanced successfully")
+                        return updated
+                    elif new_page and old_page and new_page == old_page:
+                        print("⚠ Page didn't change, waiting longer...")
+                        await asyncio.sleep(2)
+                        # Try again
+                        updated2 = await client.get_messages(BOT_USERNAME, ids=message.id)
+                        if updated2:
+                            new_page2, _ = get_current_page(updated2.message)
+                            if new_page2 and new_page2 > old_page:
+                                print("✓ Page advanced after longer wait")
+                                return updated2
+                    else:
+                        # If no page numbers, check content change
+                        if updated.message != message.message:
+                            print("✓ Content changed (no page numbers)")
                             return updated
-                        elif new_page and old_page and new_page == old_page:
-                            print("⚠ Page didn't change, waiting longer...")
-                            await asyncio.sleep(2)
-                            # Try again
-                            updated2 = await client.get_messages(BOT_USERNAME, ids=message.id)
-                            if updated2:
-                                new_page2, _ = get_current_page(updated2.message)
-                                if new_page2 and new_page2 > old_page:
-                                    print("✓ Page advanced after longer wait")
-                                    return updated2
-                        else:
-                            # If no page numbers, check content change
-                            if updated.message != message.message:
-                                print("✓ Content changed (no page numbers)")
-                                return updated
                     
                     return updated
                     
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error clicking next: {e}")
+        import traceback
+        traceback.print_exc()
     
     return None
-
-# =========================
-# GET CURRENT PAGE NUMBER
-# =========================
-
-def get_current_page(text: str):
-    match = re.search(r'(\d+)/(\d+)', text)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return None, None
-
-# =========================
-# CHECK FOR NEXT BUTTON
-# =========================
-
-async def has_next_button(message) -> bool:
-    if not message.reply_markup:
-        return False
-    
-    try:
-        rows = message.reply_markup.rows
-        for row in rows:
-            for button in row.buttons:
-                if button.text == '➡' or button.text == '→' or 'next' in button.text.lower():
-                    return True
-    except:
-        pass
-    
-    return False
 
 # =========================
 # MAIN SEARCH
@@ -523,10 +532,10 @@ async def root():
         "status": True,
         "message": "Reliable Multi-Page Telegram Bot Scraper API",
         "fixes": [
-            "wait_for_final_message() - waits for message to stop changing before parsing",
-            "click_next_with_verification() - verifies page number actually increased",
-            "Stable content detection (same message twice = stable)",
-            "Page number validation after click"
+            "wait_for_final_message() - now returns full Message object, not ID",
+            "Proper type hints added (Message type)",
+            "Tuple return types for page numbers",
+            "All message returns now use actual message objects"
         ]
     }
 
