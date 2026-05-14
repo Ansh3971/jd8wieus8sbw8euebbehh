@@ -10,36 +10,36 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 # =========================
-# ENV
+# LOAD ENV
 # =========================
 
 load_dotenv()
 
-# Safe load with error if missing
-APIID = os.getenv("APIID")
-APIHASH = os.getenv("APIHASH")
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
-BOTUSERNAME = os.getenv("BOTUSERNAME")
-
-if not APIID or not APIHASH or not SESSION or not BOTUSERNAME:
-    raise RuntimeError("Missing one or more required environment variables: APIID, APIHASH, SESSION, BOTUSERNAME")
-
-APIID = int(APIID)
+BOT_USERNAME = os.getenv("BOT_USERNAME")
 
 # =========================
-# APP
+# FASTAPI
 # =========================
 
-app = FastAPI()
-
-client = TelegramClient(
-    StringSession(SESSION),
-    APIID,
-    APIHASH
+app = FastAPI(
+    title="Telegram Bot JSON API"
 )
 
 # =========================
-# MODEL
+# TELEGRAM CLIENT
+# =========================
+
+client = TelegramClient(
+    StringSession(SESSION),
+    API_ID,
+    API_HASH
+)
+
+# =========================
+# REQUEST MODEL
 # =========================
 
 class Query(BaseModel):
@@ -51,146 +51,202 @@ class Query(BaseModel):
 
 @app.on_event("startup")
 async def startup():
+
     await client.start()
-    print("Telegram Client Started")
+
+    print("Telegram Client Connected")
+
+# =========================
+# SHUTDOWN
+# =========================
 
 @app.on_event("shutdown")
 async def shutdown():
+
     await client.disconnect()
 
 # =========================
-# CLEAN
+# TEXT CLEANER
 # =========================
 
-def clean_text(t):
-    return re.sub(r"\s+", " ", str(t)).strip() if t else ""
+def clean_text(text):
+
+    if not text:
+        return ""
+
+    return (
+        str(text)
+        .replace("\n", " ")
+        .replace("\t", " ")
+        .replace("\r", " ")
+        .strip()
+    )
 
 # =========================
-# PAGINATION SCRAPER
+# GENERIC MESSAGE PARSER
 # =========================
 
-class TelegramPaginator:
+def parse_message(text):
 
-    def __init__(self, client, bot, max_pages=20, delay=1.0):
-        self.client = client
-        self.bot = bot
-        self.max_pages = max_pages
-        self.delay = delay
-
-    def is_next(self, text):
-        if not text:
-            return False
-        t = text.lower()
-        return ("➡" in t) or ("next" in t) or (t.strip() in [">", "»"])
-
-    async def scrape(self, query):
-        pages = []
-
-        async with self.client.conversation(self.bot, timeout=120) as conv:
-            await conv.send_message(query)
-
-            for i in range(self.max_pages):
-                try:
-                    msg = await conv.get_response()
-                except Exception as e:
-                    print("No response:", e)
-                    break
-
-                text = msg.raw_text or ""
-                print(f"DEBUG PAGE {i+1}:\n{text}\n")
-                pages.append(text)
-
-                clicked = False
-                if msg.buttons:
-                    print("DEBUG BUTTONS:", [[btn.text for btn in row] for row in msg.buttons])
-                    for row in msg.buttons:
-                        for btn in row:
-                            if self.is_next(btn.text):
-                                await btn.click()
-                                clicked = True
-                                break
-                        if clicked:
-                            break
-
-                if not clicked:
-                    break
-
-                await asyncio.sleep(self.delay)
-
-        return pages
-
-# =========================
-# RAW TEXT → JSON
-# =========================
-
-def parsebottext(text: str):
-    lines = [clean_text(x) for x in text.split("\n") if clean_text(x)]
-
-    records = []
-    current = {}
-    tel_count = 1
-    addr_count = 1
-
-    for line in lines:
-        if ":" in line:
-            key, val = line.split(":", 1)
-            key = key.strip()
-            val = val.strip()
-
-            if key in current:
-                if key.lower().startswith("telephone"):
-                    key = f"Telephone_{tel_count}"
-                    tel_count += 1
-                elif key.lower().startswith("adres"):
-                    key = f"Adres_{addr_count}"
-                    addr_count += 1
-                else:
-                    key = key + "_dup"
-
-            current[key] = val
-        else:
-            if current:
-                records.append(current)
-                current = {}
-                tel_count = 1
-                addr_count = 1
-
-    if current:
-        records.append(current)
-
-    return {
-        "total_records": len(records),
-        "records": records
+    result = {
+        "raw": text,
+        "parsed": {}
     }
 
+    if not text:
+        return result
+
+    lines = text.splitlines()
+
+    parsed = {}
+
+    for line in lines:
+
+        line = clean_text(line)
+
+        if not line:
+            continue
+
+        # key: value
+        if ":" in line:
+
+            parts = line.split(":", 1)
+
+            key = clean_text(parts[0])
+            value = clean_text(parts[1])
+
+            if not key or not value:
+                continue
+
+            # MULTIPLE VALUES
+            if key in parsed:
+
+                if isinstance(parsed[key], list):
+                    parsed[key].append(value)
+
+                else:
+                    parsed[key] = [
+                        parsed[key],
+                        value
+                    ]
+
+            else:
+                parsed[key] = value
+
+    # DEDUPE
+    for k, v in parsed.items():
+
+        if isinstance(v, list):
+
+            unique = []
+
+            for item in v:
+                if item not in unique:
+                    unique.append(item)
+
+            parsed[k] = unique
+
+    result["parsed"] = parsed
+
+    # EXTRACT URLS
+    urls = re.findall(
+        r'https?://\\S+',
+        text
+    )
+
+    if urls:
+        result["urls"] = urls
+
+    # EXTRACT EMAILS
+    emails = re.findall(
+        r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}',
+        text
+    )
+
+    if emails:
+        result["emails"] = list(set(emails))
+
+    return result
+
 # =========================
-# API
+# MAIN SEARCH
 # =========================
 
 @app.post("/search")
 async def search(data: Query):
+
     try:
-        paginator = TelegramPaginator(client, BOTUSERNAME)
-        pages = await paginator.scrape(data.message)
 
-        if not pages:
-            return {"status": False, "error": "No data"}
+        # SEND MESSAGE TO BOT
+        await client.send_message(
+            BOT_USERNAME,
+            data.message
+        )
 
-        full_text = "\n".join(pages)
+        # WAIT RESPONSE
+        await asyncio.sleep(3)
+
+        # GET LATEST MESSAGE
+        messages = await client.get_messages(
+            BOT_USERNAME,
+            limit=5
+        )
+
+        if not messages:
+
+            return {
+                "status": False,
+                "error": "No response from bot"
+            }
+
+        target_message = None
+
+        for msg in messages:
+
+            if msg.message:
+                target_message = msg
+                break
+
+        if not target_message:
+
+            return {
+                "status": False,
+                "error": "No text message found"
+            }
+
+        text = target_message.message
+
+        parsed = parse_message(text)
 
         return {
             "status": True,
-            "pages": len(pages),
-            "parsed": parsebottext(full_text)
+            "query": data.message,
+            "message_id": target_message.id,
+            "date": str(target_message.date),
+            "text": text,
+            "data": parsed
         }
 
     except Exception as e:
-        return {"status": False, "error": str(e)}
+
+        return {
+            "status": False,
+            "error": str(e)
+        }
 
 # =========================
-# TEST
+# BROWSER SEARCH
 # =========================
 
 @app.get("/test")
 async def test(q: str):
-    return await search(Query(message=q))
+
+    return await search(
+        Query(message=q)
+    )
+
+# =========================
+# RUN
+# =========================
+
+# uvicorn main:app --host 0.0.0.0 --port $PORT
