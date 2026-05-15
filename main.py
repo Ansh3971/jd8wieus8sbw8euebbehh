@@ -58,22 +58,6 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# HELPER: Check if field starts a new record
-# =========================
-
-def is_record_start_field(field_tag: str) -> bool:
-    """Check if this field typically starts a new record"""
-    record_starters = [
-        "📞Telephone", "📞Phone", "📞Mobile",
-        "📩Email", "📩E-mail",
-        "🏘️Adres", "🏘️Address"
-    ]
-    for starter in record_starters:
-        if starter in field_tag:
-            return True
-    return False
-
-# =========================
 # ADD FIELD TO RECORD
 # =========================
 
@@ -159,6 +143,7 @@ def add_field_to_record(record: Dict, field_tag: str, value: str):
         if json_key in ["phones", "addresses", "emails"]:
             if json_key not in record:
                 record[json_key] = []
+            # Add if not already present
             if value not in record[json_key]:
                 record[json_key].append(value)
         else:
@@ -167,14 +152,29 @@ def add_field_to_record(record: Dict, field_tag: str, value: str):
                 record[json_key] = value
 
 
+def is_record_complete(record: Dict) -> bool:
+    """Check if a record has enough data to be considered complete"""
+    # A record is complete if it has at least one of these identifiers
+    identifiers = ["full_name", "father_name", "document_number", "passport_number"]
+    for identifier in identifiers:
+        if identifier in record:
+            return True
+    # Also consider record with multiple phones and addresses as complete
+    phones_count = len(record.get("phones", []))
+    addresses_count = len(record.get("addresses", []))
+    if phones_count >= 2 or addresses_count >= 2:
+        return True
+    return False
+
+
 # =========================
-# HTML PARSER - PROPER RECORD SPLITTING
+# HTML PARSER - PROPER RECORD GROUPING
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     """
     Parse LeakBase HTML and extract structured records
-    Properly splits records within each block using intelligent grouping
+    Groups fields that belong to the same person together
     """
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
@@ -194,88 +194,51 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
         
-        # Get raw HTML content
+        # Get raw HTML content and split by double br tags (record separators)
         html_text = str(text_elem)
         
-        # Extract all field-value pairs with their positions
-        # Pattern: <b>FIELD</b> ... <code>VALUE</code> or just text after
-        field_pattern = re.compile(r'<b>(.+?)</b>\s*(?:<code>(.*?)</code>|([^<]+?)(?=<br|<b|$))', re.DOTALL)
+        # Split by <br><br> to get individual records
+        # But also preserve the structure
+        record_parts = re.split(r'<br>\s*<br>', html_text)
         
-        fields = []
-        for match in field_pattern.finditer(html_text):
-            field_tag = match.group(1).strip()
-            value = match.group(2) or match.group(3)
-            if value:
-                value = value.strip()
-                value = re.sub(r'<[^>]+>', '', value)
-                if value:
-                    fields.append((field_tag, value, match.start()))
-        
-        if not fields:
-            continue
-        
-        # Group fields into records
-        records_in_block = []
-        current_record = {"source": source}
-        record_has_content = False
-        
-        for i, (field_tag, value, pos) in enumerate(fields):
-            # Check if this field starts a new record
-            # New record starts when:
-            # 1. Current record already has content AND
-            # 2. This field is a record starter (like a new phone number) AND
-            # 3. Not the first field
-            if record_has_content and is_record_start_field(field_tag) and i > 0:
-                # Save current record and start new one
-                if len(current_record) > 1:
-                    # Clean up single-item arrays
-                    for key in ["phones", "addresses", "emails"]:
-                        if key in current_record and isinstance(current_record[key], list) and len(current_record[key]) == 1:
-                            current_record[key] = current_record[key][0]
-                    records_in_block.append(current_record)
-                current_record = {"source": source}
-                record_has_content = False
+        for part in record_parts:
+            if not part.strip():
+                continue
             
-            # Add field to current record
-            add_field_to_record(current_record, field_tag, value)
-            record_has_content = True
-        
-        # Add last record
-        if len(current_record) > 1:
-            for key in ["phones", "addresses", "emails"]:
-                if key in current_record and isinstance(current_record[key], list) and len(current_record[key]) == 1:
-                    current_record[key] = current_record[key][0]
-            records_in_block.append(current_record)
-        
-        # Also try splitting by double br tags as backup
-        if not records_in_block:
-            # Split by double br tags
-            parts = re.split(r'<br>\s*<br>', html_text)
-            for part in parts:
-                if not part.strip() or '<b>' not in part:
-                    continue
-                
-                current_record = {"source": source}
-                found_fields = False
-                
-                # Extract fields from this part
-                part_fields = re.findall(r'<b>(.+?)</b>\s*(?:<code>(.*?)</code>|([^<]+?)(?=<br|<b|$))', part, re.DOTALL)
-                for field_tag, val1, val2 in part_fields:
-                    value = val1 or val2
-                    if value:
-                        value = value.strip()
-                        value = re.sub(r'<[^>]+>', '', value)
-                        if value:
-                            add_field_to_record(current_record, field_tag.strip(), value)
-                            found_fields = True
-                
-                if found_fields and len(current_record) > 1:
-                    for key in ["phones", "addresses", "emails"]:
-                        if key in current_record and isinstance(current_record[key], list) and len(current_record[key]) == 1:
-                            current_record[key] = current_record[key][0]
-                    records_in_block.append(current_record)
-        
-        all_records.extend(records_in_block)
+            # Skip the description paragraph (long text without bold tags)
+            if '<b>' not in part:
+                continue
+            
+            # Extract all fields from this part
+            current_record = {"source": source}
+            
+            # Pattern for fields with code tags
+            pattern_code = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
+            matches_code = pattern_code.findall(part)
+            
+            for field_tag, value in matches_code:
+                field_tag = field_tag.strip()
+                value = value.strip()
+                if value and value not in ["None", "null", ""]:
+                    add_field_to_record(current_record, field_tag, value)
+            
+            # Pattern for fields without code tags (plain text after bold)
+            pattern_text = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
+            matches_text = pattern_text.findall(part)
+            
+            for field_tag, value in matches_text:
+                field_tag = field_tag.strip()
+                value = value.strip()
+                if value and len(value) > 1 and value not in ["None", "null", "", ":", "-"]:
+                    add_field_to_record(current_record, field_tag, value)
+            
+            # Only add record if it has fields besides source
+            if len(current_record) > 1:
+                # Clean up - convert single-item arrays to single values
+                for key in ["phones", "addresses", "emails"]:
+                    if key in current_record and isinstance(current_record[key], list) and len(current_record[key]) == 1:
+                        current_record[key] = current_record[key][0]
+                all_records.append(current_record)
     
     return all_records
 
