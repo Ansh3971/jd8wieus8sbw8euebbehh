@@ -58,135 +58,86 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING
+# FIELD MAPPING (DEFINED ONCE)
 # =========================
-
-FIELD_MAPPING = {
-    "📞Telephone": "phones",
-    "📞Phone": "phones",
-    "📞Mobile": "phones",
-    "🏘️Adres": "addresses",
-    "🏘️Address": "addresses",
-    "📩Email": "emails",
-    "📩E-mail": "emails",
-    "🃏Document number": "document_number",
-    "🃏Document No": "document_number",
-    "👤Full name": "full_name",
-    "👤Name": "full_name",
-    "👨The name of the father": "father_name",
-    "👨Father name": "father_name",
-    "🗺️Region": "region",
-    "🗺️Location": "region",
-    "👤Nick": "nick",
-    "👤Nickname": "nick",
-    "📖Passport number": "passport_number",
-    "🔐Encrypted password": "encrypted_password",
-    "🔑Password": "password",
-    "📆Date": "registration_date",
-    "📆The date of registration": "registration_date",
-    "📆Last activity": "last_activity",
-    "🎂Date of birth": "dob",
-    "🌃City": "city",
-    "🇺🇸Stat": "state",
-    "🏤Postal code": "postal_code",
-    "🎯IP": "ip",
-    "🚻Gender": "gender",
-    "👴Age": "age",
-    "📍District": "district",
-    "🔗Link": "link",
-    "🏷️ login": "login",
-    "📰Category": "category",
-    "🗾Country": "country",
-    "⬆Level": "level",
-    "🏫Education": "education",
-    "👤Surname": "surname"
-}
 
 def add_field_to_record(record: Dict, field_tag: str, value: str):
     """Add field to record with proper mapping"""
     json_key = None
-    
-    # First check exact mapping
-    for emoji, key in FIELD_MAPPING.items():
-        if emoji in field_tag:
-            json_key = key
-            break
-    
-    # If not found by emoji, try partial match
-    if not json_key:
-        # Phone numbers
-        if "📞" in field_tag or "Telephone" in field_tag or "Phone" in field_tag or "Mobile" in field_tag:
-            json_key = "phones"
-        # Addresses
-        elif "🏘️" in field_tag or "Adres" in field_tag or "Address" in field_tag:
-            json_key = "addresses"
-        # Emails
-        elif "📩" in field_tag or "Email" in field_tag or "E-mail" in field_tag:
-            json_key = "emails"
-        # Document number
-        elif "🃏" in field_tag or "Document number" in field_tag or "Document No" in field_tag:
-            json_key = "document_number"
-        # Full name
-        elif "👤" in field_tag or "Full name" in field_tag or "Name:" in field_tag:
-            json_key = "full_name"
-        # Father name
-        elif "👨" in field_tag or "The name of the father" in field_tag or "Father name" in field_tag:
-            json_key = "father_name"
-        # Region
-        elif "🗺️" in field_tag or "Region" in field_tag or "Location" in field_tag:
-            json_key = "region"
-        # Nick
-        elif "Nick" in field_tag:
-            json_key = "nick"
-        # Passport number
-        elif "Passport number" in field_tag:
-            json_key = "passport_number"
-        # Encrypted password
-        elif "Encrypted password" in field_tag:
-            json_key = "encrypted_password"
-        # Plain password
-        elif "Password" in field_tag and "Encrypted" not in field_tag:
-            json_key = "password"
-        # Dates
-        elif "Date" in field_tag or "registration" in field_tag.lower():
-            json_key = "registration_date"
-        elif "Last activity" in field_tag:
-            json_key = "last_activity"
-        elif "Date of birth" in field_tag or "dob" in field_tag.lower():
-            json_key = "dob"
-        # Location
-        elif "City" in field_tag:
-            json_key = "city"
-        elif "Stat" in field_tag:
-            json_key = "state"
-        elif "Postal code" in field_tag:
-            json_key = "postal_code"
-        # IP
-        elif "IP" in field_tag:
-            json_key = "ip"
-        # Gender/Age/District
-        elif "Gender" in field_tag:
-            json_key = "gender"
-        elif "Age" in field_tag:
-            json_key = "age"
-        elif "District" in field_tag:
-            json_key = "district"
-        # Other
-        elif "Link" in field_tag:
-            json_key = "link"
-        elif "login" in field_tag:
-            json_key = "login"
-        elif "Category" in field_tag:
-            json_key = "category"
-        elif "Country" in field_tag:
-            json_key = "country"
-        elif "Level" in field_tag:
-            json_key = "level"
-        elif "Education" in field_tag:
-            json_key = "education"
-        elif "Surname" in field_tag:
-            json_key = "surname"
-    
+
+    # Phone numbers
+    if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
+        json_key = "phones"
+    # Addresses
+    elif "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
+        json_key = "addresses"
+    # Emails
+    elif "📩Email" in field_tag or "📩E-mail" in field_tag:
+        json_key = "emails"
+    # Document number
+    elif "🃏Document number" in field_tag or "🃏Document No" in field_tag:
+        json_key = "document_number"
+    # Full name
+    elif "👤Full name" in field_tag or "👤Name" in field_tag:
+        json_key = "full_name"
+    # Father name
+    elif "👨The name of the father" in field_tag or "👨Father name" in field_tag:
+        json_key = "father_name"
+    # Region
+    elif "🗺️Region" in field_tag or "🗺️Location" in field_tag:
+        json_key = "region"
+    # Nickname
+    elif "👤Nick" in field_tag or "👤Nickname" in field_tag:
+        json_key = "nick"
+    # Passport number
+    elif "📖Passport number" in field_tag:
+        json_key = "passport_number"
+    # Encrypted password
+    elif "🔐Encrypted password" in field_tag:
+        json_key = "encrypted_password"
+    # Plain password
+    elif "🔑Password" in field_tag:
+        json_key = "password"
+    # Dates
+    elif "📆Date" in field_tag or "📆The date of registration" in field_tag:
+        json_key = "registration_date"
+    elif "📆Last activity" in field_tag:
+        json_key = "last_activity"
+    elif "🎂Date of birth" in field_tag:
+        json_key = "dob"
+    # Location
+    elif "🌃City" in field_tag:
+        json_key = "city"
+    elif "🇺🇸Stat" in field_tag:
+        json_key = "state"
+    elif "🏤Postal code" in field_tag:
+        json_key = "postal_code"
+    # Network
+    elif "🎯IP" in field_tag:
+        json_key = "ip"
+    # Demographics
+    elif "🚻Gender" in field_tag:
+        json_key = "gender"
+    elif "👴Age" in field_tag:
+        json_key = "age"
+    elif "📍District" in field_tag:
+        json_key = "district"
+    # Other
+    elif "🔗Link" in field_tag:
+        json_key = "link"
+    elif "🏷️ login" in field_tag:
+        json_key = "login"
+    elif "📰Category" in field_tag:
+        json_key = "category"
+    elif "🗾Country" in field_tag:
+        json_key = "country"
+    elif "⬆Level" in field_tag:
+        json_key = "level"
+    elif "🏫Education" in field_tag:
+        json_key = "education"
+    elif "👤Surname" in field_tag:
+        json_key = "surname"
+
     if json_key:
         if json_key in ["phones", "addresses", "emails"]:
             if json_key not in record:
@@ -204,42 +155,41 @@ def add_field_to_record(record: Dict, field_tag: str, value: str):
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
-    
+
     blocks = soup.find_all("div", class_="block")
-    
     for block in blocks:
         # Get source title
         source = "Unknown"
         title_elem = block.find("div", class_="block-title")
         if title_elem:
             source = title_elem.get_text(strip=True)
-        
+
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
             continue
-        
-        # Get raw HTML string of the block text
+
+        # Get raw HTML of block-text
         html_text = str(text_elem)
-        
-        # Split by double <br> tags (with optional spaces and slashes)
-        # This separates individual records within the block
-        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
-        
+
+        # Split by <br><br> (double line break) – this separates individual records
+        # Use a simple string split to avoid regex issues
+        parts = html_text.split("<br><br>")
+
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-            
+
             # Skip the initial description (long text without field markers)
             if len(part) > 200 and '📞' not in part and '🏘️' not in part and '📩' not in part:
                 continue
-            
+
             # Skip parts that don't contain any bold tags (no fields)
             if '<b>' not in part:
                 continue
-            
+
             record = {"source": source}
-            
+
             # Extract fields with <code> value
             pattern_code = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
             for field_tag, value in pattern_code.findall(part):
@@ -247,23 +197,23 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                 value = value.strip()
                 if value:
                     add_field_to_record(record, field_tag, value)
-            
+
             # Extract fields without <code> (plain text after bold)
             pattern_text = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
             for field_tag, value in pattern_text.findall(part):
                 field_tag = field_tag.strip()
                 value = value.strip()
-                if value and len(value) > 1 and value not in [":", "-", " ", ""]:
+                if value and len(value) > 1 and value not in [":", "-", " "]:
                     add_field_to_record(record, field_tag, value)
-            
+
             # Only add if record has more than just source
             if len(record) > 1:
-                # Convert single-item arrays to simple values
+                # Convert single‑item arrays to simple values
                 for key in ["phones", "addresses", "emails"]:
                     if key in record and isinstance(record[key], list) and len(record[key]) == 1:
                         record[key] = record[key][0]
                 all_records.append(record)
-    
+
     return all_records
 
 # =========================
@@ -276,11 +226,11 @@ async def search(data: dict):
         message = data.get("message", "")
         if not message:
             return {"status": False, "error": "message required"}
-        
+
         print(f"\n=== SEARCH: {message} ===")
         sent = await client.send_message(BOT_USERNAME, message)
         await asyncio.sleep(3)
-        
+
         messages = await client.get_messages(BOT_USERNAME, limit=10)
         reply = None
         for msg in messages:
@@ -289,9 +239,9 @@ async def search(data: dict):
                 break
         if not reply:
             return {"status": False, "error": "No response from bot"}
-        
+
         file_path = None
-        
+
         if reply.buttons:
             for row in reply.buttons:
                 for btn in row:
@@ -309,7 +259,7 @@ async def search(data: dict):
                         break
                 if file_path:
                     break
-        
+
         if not file_path and reply.message:
             html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', reply.message, re.DOTALL | re.IGNORECASE)
             if html_match:
@@ -318,7 +268,7 @@ async def search(data: dict):
                 with open(temp_path, "w", encoding="utf-8") as f:
                     f.write(html_content)
                 file_path = temp_path
-        
+
         if file_path and os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 html_content = f.read()
@@ -331,9 +281,9 @@ async def search(data: dict):
                 "record_count": len(records),
                 "data": records
             }
-        
+
         return {"status": False, "error": "No file received"}
-    
+
     except Exception as e:
         print(f"ERROR: {str(e)}")
         import traceback
