@@ -2,16 +2,20 @@ services:
   - type: web
     name: telegram-html-scraper
     runtime: python
-    buildCommand: |
-      curl -fsSL https://pyenv.run | bash
-      export PATH="$HOME/.pyenv/bin:$PATH"
-      eval "$(pyenv init -)"
-      pyenv install 3.11.8 -s
-      pyenv global 3.11.8
-      python --version
-      pip install --upgrade pip setuptools wheel
-      pip install --no-cache-dir -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.8
+        value: 3.11.0
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: SESSION
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: DOWNLOAD_BUTTON
+        value: Download
+      - key: PORT
+        value: 5000
