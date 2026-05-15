@@ -58,71 +58,55 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING (DEFINED ONCE)
+# FIELD MAPPING (HELPER)
 # =========================
 
 def add_field_to_record(record: Dict, field_tag: str, value: str):
-    """Add field to record with proper mapping"""
+    """Add field to record with proper mapping."""
     json_key = None
 
-    # Phone numbers
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
         json_key = "phones"
-    # Addresses
     elif "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
         json_key = "addresses"
-    # Emails
     elif "📩Email" in field_tag or "📩E-mail" in field_tag:
         json_key = "emails"
-    # Document number
     elif "🃏Document number" in field_tag or "🃏Document No" in field_tag:
         json_key = "document_number"
-    # Full name
     elif "👤Full name" in field_tag or "👤Name" in field_tag:
         json_key = "full_name"
-    # Father name
     elif "👨The name of the father" in field_tag or "👨Father name" in field_tag:
         json_key = "father_name"
-    # Region
     elif "🗺️Region" in field_tag or "🗺️Location" in field_tag:
         json_key = "region"
-    # Nickname
     elif "👤Nick" in field_tag or "👤Nickname" in field_tag:
         json_key = "nick"
-    # Passport number
     elif "📖Passport number" in field_tag:
         json_key = "passport_number"
-    # Encrypted password
     elif "🔐Encrypted password" in field_tag:
         json_key = "encrypted_password"
-    # Plain password
     elif "🔑Password" in field_tag:
         json_key = "password"
-    # Dates
     elif "📆Date" in field_tag or "📆The date of registration" in field_tag:
         json_key = "registration_date"
     elif "📆Last activity" in field_tag:
         json_key = "last_activity"
     elif "🎂Date of birth" in field_tag:
         json_key = "dob"
-    # Location
     elif "🌃City" in field_tag:
         json_key = "city"
     elif "🇺🇸Stat" in field_tag:
         json_key = "state"
     elif "🏤Postal code" in field_tag:
         json_key = "postal_code"
-    # Network
     elif "🎯IP" in field_tag:
         json_key = "ip"
-    # Demographics
     elif "🚻Gender" in field_tag:
         json_key = "gender"
     elif "👴Age" in field_tag:
         json_key = "age"
     elif "📍District" in field_tag:
         json_key = "district"
-    # Other
     elif "🔗Link" in field_tag:
         json_key = "link"
     elif "🏷️ login" in field_tag:
@@ -149,7 +133,7 @@ def add_field_to_record(record: Dict, field_tag: str, value: str):
                 record[json_key] = value
 
 # =========================
-# MAIN PARSER - CORRECT RECORD SPLITTING
+# MAIN PARSER – CORRECT RECORD SPLITTING
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
@@ -171,21 +155,21 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         # Get raw HTML of block-text
         html_text = str(text_elem)
 
-        # Split by <br><br> (double line break) – this separates individual records
-        # Use a simple string split to avoid regex issues
-        parts = html_text.split("<br><br>")
+        # Split by double <br> tags (with optional attributes, spaces, etc.)
+        # This regex matches: <br (optional spaces and attributes) > optional whitespace <br ... >
+        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
         for part in parts:
             part = part.strip()
             if not part:
                 continue
 
-            # Skip the initial description (long text without field markers)
-            if len(part) > 200 and '📞' not in part and '🏘️' not in part and '📩' not in part:
+            # Skip the initial description (no bold tags or field emojis)
+            if '<b>' not in part and '📞' not in part and '🏘️' not in part and '📩' not in part:
                 continue
 
-            # Skip parts that don't contain any bold tags (no fields)
-            if '<b>' not in part:
+            # Also skip if it's just a short leftover (like a stray <br>)
+            if len(part) < 20 and ':' not in part:
                 continue
 
             record = {"source": source}
@@ -206,7 +190,7 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                 if value and len(value) > 1 and value not in [":", "-", " "]:
                     add_field_to_record(record, field_tag, value)
 
-            # Only add if record has more than just source
+            # Only add record if it has more than just source
             if len(record) > 1:
                 # Convert single‑item arrays to simple values
                 for key in ["phones", "addresses", "emails"]:
