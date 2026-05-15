@@ -58,69 +58,134 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING
+# FIELD MAPPING (DEFINED FIRST)
 # =========================
+
+FIELD_MAPPING = {
+    "📞Telephone": "phones",
+    "📞Phone": "phones",
+    "📞Mobile": "phones",
+    "🏘️Adres": "addresses",
+    "🏘️Address": "addresses",
+    "📩Email": "emails",
+    "📩E-mail": "emails",
+    "🃏Document number": "document_number",
+    "🃏Document No": "document_number",
+    "👤Full name": "full_name",
+    "👤Name": "full_name",
+    "👨The name of the father": "father_name",
+    "👨Father name": "father_name",
+    "🗺️Region": "region",
+    "🗺️Location": "region",
+    "👤Nick": "nick",
+    "👤Nickname": "nick",
+    "📖Passport number": "passport_number",
+    "🔐Encrypted password": "encrypted_password",
+    "🔑Password": "password",
+    "📆Date": "registration_date",
+    "📆The date of registration": "registration_date",
+    "📆Last activity": "last_activity",
+    "🎂Date of birth": "dob",
+    "🌃City": "city",
+    "🇺🇸Stat": "state",
+    "🏤Postal code": "postal_code",
+    "🎯IP": "ip",
+    "🚻Gender": "gender",
+    "👴Age": "age",
+    "📍District": "district",
+    "🔗Link": "link",
+    "🏷️ login": "login",
+    "📰Category": "category",
+    "🗾Country": "country",
+    "⬆Level": "level",
+    "🏫Education": "education",
+    "👤Surname": "surname"
+}
 
 def add_field_to_record(record: Dict, field_tag: str, value: str):
     """Add field to record with proper mapping"""
     json_key = None
     
-    if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
-        json_key = "phones"
-    elif "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
-        json_key = "addresses"
-    elif "📩Email" in field_tag or "📩E-mail" in field_tag:
-        json_key = "emails"
-    elif "🃏Document number" in field_tag or "🃏Document No" in field_tag:
-        json_key = "document_number"
-    elif "👤Full name" in field_tag or "👤Name" in field_tag:
-        json_key = "full_name"
-    elif "👨The name of the father" in field_tag or "👨Father name" in field_tag:
-        json_key = "father_name"
-    elif "🗺️Region" in field_tag or "🗺️Location" in field_tag:
-        json_key = "region"
-    elif "👤Nick" in field_tag or "👤Nickname" in field_tag:
-        json_key = "nick"
-    elif "📖Passport number" in field_tag:
-        json_key = "passport_number"
-    elif "🔐Encrypted password" in field_tag:
-        json_key = "encrypted_password"
-    elif "🔑Password" in field_tag:
-        json_key = "password"
-    elif "📆Date" in field_tag or "📆The date of registration" in field_tag:
-        json_key = "registration_date"
-    elif "📆Last activity" in field_tag:
-        json_key = "last_activity"
-    elif "🎂Date of birth" in field_tag:
-        json_key = "dob"
-    elif "🌃City" in field_tag:
-        json_key = "city"
-    elif "🇺🇸Stat" in field_tag:
-        json_key = "state"
-    elif "🏤Postal code" in field_tag:
-        json_key = "postal_code"
-    elif "🎯IP" in field_tag:
-        json_key = "ip"
-    elif "🚻Gender" in field_tag:
-        json_key = "gender"
-    elif "👴Age" in field_tag:
-        json_key = "age"
-    elif "📍District" in field_tag:
-        json_key = "district"
-    elif "🔗Link" in field_tag:
-        json_key = "link"
-    elif "🏷️ login" in field_tag:
-        json_key = "login"
-    elif "📰Category" in field_tag:
-        json_key = "category"
-    elif "🗾Country" in field_tag:
-        json_key = "country"
-    elif "⬆Level" in field_tag:
-        json_key = "level"
-    elif "🏫Education" in field_tag:
-        json_key = "education"
-    elif "👤Surname" in field_tag:
-        json_key = "surname"
+    # First check exact mapping
+    for emoji, key in FIELD_MAPPING.items():
+        if emoji in field_tag:
+            json_key = key
+            break
+    
+    # If not found by emoji, try partial match
+    if not json_key:
+        # Phone numbers
+        if "📞" in field_tag or "Telephone" in field_tag or "Phone" in field_tag or "Mobile" in field_tag:
+            json_key = "phones"
+        # Addresses
+        elif "🏘️" in field_tag or "Adres" in field_tag or "Address" in field_tag:
+            json_key = "addresses"
+        # Emails
+        elif "📩" in field_tag or "Email" in field_tag or "E-mail" in field_tag:
+            json_key = "emails"
+        # Document number
+        elif "🃏" in field_tag or "Document number" in field_tag or "Document No" in field_tag:
+            json_key = "document_number"
+        # Full name
+        elif "👤" in field_tag or "Full name" in field_tag or "Name:" in field_tag:
+            json_key = "full_name"
+        # Father name
+        elif "👨" in field_tag or "The name of the father" in field_tag or "Father name" in field_tag:
+            json_key = "father_name"
+        # Region
+        elif "🗺️" in field_tag or "Region" in field_tag or "Location" in field_tag:
+            json_key = "region"
+        # Nick
+        elif "Nick" in field_tag:
+            json_key = "nick"
+        # Passport number
+        elif "Passport number" in field_tag:
+            json_key = "passport_number"
+        # Encrypted password
+        elif "Encrypted password" in field_tag:
+            json_key = "encrypted_password"
+        # Plain password
+        elif "Password" in field_tag and "Encrypted" not in field_tag:
+            json_key = "password"
+        # Dates
+        elif "Date" in field_tag or "registration" in field_tag.lower():
+            json_key = "registration_date"
+        elif "Last activity" in field_tag:
+            json_key = "last_activity"
+        elif "Date of birth" in field_tag or "dob" in field_tag.lower():
+            json_key = "dob"
+        # Location
+        elif "City" in field_tag:
+            json_key = "city"
+        elif "Stat" in field_tag:
+            json_key = "state"
+        elif "Postal code" in field_tag:
+            json_key = "postal_code"
+        # IP
+        elif "IP" in field_tag:
+            json_key = "ip"
+        # Gender/Age/District
+        elif "Gender" in field_tag:
+            json_key = "gender"
+        elif "Age" in field_tag:
+            json_key = "age"
+        elif "District" in field_tag:
+            json_key = "district"
+        # Other
+        elif "Link" in field_tag:
+            json_key = "link"
+        elif "login" in field_tag:
+            json_key = "login"
+        elif "Category" in field_tag:
+            json_key = "category"
+        elif "Country" in field_tag:
+            json_key = "country"
+        elif "Level" in field_tag:
+            json_key = "level"
+        elif "Education" in field_tag:
+            json_key = "education"
+        elif "Surname" in field_tag:
+            json_key = "surname"
     
     if json_key:
         if json_key in ["phones", "addresses", "emails"]:
@@ -133,7 +198,7 @@ def add_field_to_record(record: Dict, field_tag: str, value: str):
                 record[json_key] = value
 
 # =========================
-# MAIN PARSER - LINE BY LINE WITH STATE
+# MAIN PARSER
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
@@ -141,6 +206,7 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     all_records = []
     
     blocks = soup.find_all("div", class_="block")
+    
     for block in blocks:
         # Get source title
         source = "Unknown"
@@ -152,105 +218,42 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
         
-        # Get plain text lines to preserve order
-        lines = text_elem.get_text(separator="\n", strip=True).split("\n")
+        # Method 1: Split by double <br> tags in raw HTML
+        html_text = str(text_elem)
+        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
         
-        current_record = None
-        # We will accumulate fields and decide when to finalize a record
-        # A new record starts when we see a field that typically starts a person's data
-        # and the current record already has a name or father or document number.
-        # We'll keep a temporary dict for the current record.
-        temp_record = {}
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
+        for part in parts:
+            part = part.strip()
+            if not part or '<b>' not in part:
+                continue
+            # Skip description (long text with no field markers)
+            if len(part) > 300 and '📞' not in part and '🏘️' not in part and '📩' not in part:
                 continue
             
-            # Skip the description paragraph (long text without colons or field indicators)
-            if len(line) > 200 and ':' not in line and not any(emoji in line for emoji in ['📞', '🏘️', '📩', '🃏', '👤', '👨', '🗺️']):
-                continue
+            record = {"source": source}
             
-            # Try to extract field and value
-            field_tag = None
-            value = None
+            # Extract fields with code tags
+            pattern_code = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
+            for field_tag, value in pattern_code.findall(part):
+                field_tag = field_tag.strip()
+                value = value.strip()
+                if value:
+                    add_field_to_record(record, field_tag, value)
             
-            # Pattern 1: bold tags with code (but in plain text, we have to parse from the line as it appears in text)
-            # Since we have plain text, we look for known emoji prefixes
-            for emoji in FIELD_MAPPING:
-                if line.startswith(emoji):
-                    # Split at first colon
-                    if ':' in line:
-                        parts = line.split(':', 1)
-                        field_tag = parts[0].strip()
-                        value = parts[1].strip()
-                    else:
-                        field_tag = emoji
-                        value = line[len(emoji):].strip()
-                    break
+            # Extract fields without code tags (plain text after bold)
+            pattern_text = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
+            for field_tag, value in pattern_text.findall(part):
+                field_tag = field_tag.strip()
+                value = value.strip()
+                if value and len(value) > 1 and value not in [":", "-"]:
+                    add_field_to_record(record, field_tag, value)
             
-            if field_tag and value:
-                # Add to temp_record
-                add_field_to_record(temp_record, field_tag, value)
-                
-                # Check if this record is complete (has name/father/document)
-                # If complete and we see another field that typically starts a new record (like a new phone), we finalize
-                # But simpler: After adding, if the record has a name or father or document, and the next line starts a new record, we finalize.
-                # We'll finalize later when we detect a new record start.
-            else:
-                # Possibly multi-line address continuation? We'll ignore.
-                pass
-            
-            # Check if we should finalize the current record: when we encounter a line that starts a new record
-            # and current record already has fields. A new record start is indicated by a line that starts with a phone, email, or address,
-            # but only if the current record already has some fields (to avoid finalizing empty record).
-            # However, without looking ahead, we can finalize at the end of the block.
-        
-        # At the end of the block, finalize the last record
-        if temp_record and len(temp_record) > 1:
-            # Clean up single-item arrays
-            for key in ["phones", "addresses", "emails"]:
-                if key in temp_record and isinstance(temp_record[key], list) and len(temp_record[key]) == 1:
-                    temp_record[key] = temp_record[key][0]
-            temp_record["source"] = source
-            all_records.append(temp_record)
-    
-    # If the above didn't work (no records), fall back to splitting by double br
-    if not all_records:
-        # Fallback method: split by <br><br> in raw HTML
-        for block in blocks:
-            source = "Unknown"
-            title_elem = block.find("div", class_="block-title")
-            if title_elem:
-                source = title_elem.get_text(strip=True)
-            
-            text_elem = block.find("div", class_="block-text")
-            if not text_elem:
-                continue
-            
-            html_text = str(text_elem)
-            # Split by double br (with optional spaces and slashes)
-            parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
-            
-            for part in parts:
-                part = part.strip()
-                if not part or '<b>' not in part:
-                    continue
-                if len(part) < 50 and ':' not in part:
-                    continue
-                record = {"source": source}
-                # Extract fields from this part
-                pattern_code = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
-                for field_tag, value in pattern_code.findall(part):
-                    add_field_to_record(record, field_tag.strip(), value.strip())
-                pattern_text = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
-                for field_tag, value in pattern_text.findall(part):
-                    add_field_to_record(record, field_tag.strip(), value.strip())
-                if len(record) > 1:
-                    for key in ["phones", "addresses", "emails"]:
-                        if key in record and isinstance(record[key], list) and len(record[key]) == 1:
-                            record[key] = record[key][0]
-                    all_records.append(record)
+            if len(record) > 1:
+                # Clean up single-item arrays
+                for key in ["phones", "addresses", "emails"]:
+                    if key in record and isinstance(record[key], list) and len(record[key]) == 1:
+                        record[key] = record[key][0]
+                all_records.append(record)
     
     return all_records
 
