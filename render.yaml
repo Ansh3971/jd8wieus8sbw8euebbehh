@@ -7,15 +7,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      - key: API_ID
-        sync: false
-      - key: API_HASH
-        sync: false
-      - key: SESSION
-        sync: false
-      - key: BOT_USERNAME
-        sync: false
-      - key: DOWNLOAD_BUTTON
-        value: Download
       - key: PORT
         value: 5000
