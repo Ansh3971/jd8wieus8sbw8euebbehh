@@ -58,92 +58,24 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# HTML PARSER - PROPER RECORD SPLITTING
+# HELPER: Check if field starts a new record
 # =========================
 
-def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
-    """
-    Parse LeakBase HTML and extract structured records
-    Properly splits records within each block using double br tags
-    """
-    soup = BeautifulSoup(html_content, "html.parser")
-    all_records = []
-    
-    # Find all block elements
-    blocks = soup.find_all("div", class_="block")
-    
-    for block in blocks:
-        # Extract source title
-        source = "Unknown"
-        title_elem = block.find("div", class_="block-title")
-        if title_elem:
-            title_text = title_elem.get_text(strip=True)
-            # Keep original title with emoji for better identification
-            source = title_text.strip()
-        
-        # Get block-text content
-        text_elem = block.find("div", class_="block-text")
-        if not text_elem:
-            continue
-        
-        # Get raw HTML content
-        html_text = str(text_elem)
-        
-        # Split by double br tags - these separate records
-        # Also handle cases where records end with <br><br> and next starts with <b>
-        record_parts = re.split(r'<br>\s*<br>', html_text)
-        
-        for part in record_parts:
-            if not part.strip():
-                continue
-            
-            # Skip the description paragraph (long text without field markers)
-            # Description usually has no bold tags and is long
-            if '<b>' not in part and len(part) > 200:
-                continue
-            
-            # Check if this part contains any fields
-            if '<b>' not in part:
-                continue
-            
-            current_record = {"source": source}
-            
-            # Extract all field-value pairs from this record part
-            # Pattern 1: <b>📞Telephone:</b> <code>123456</code>
-            pattern1 = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
-            matches1 = pattern1.findall(part)
-            
-            for field_tag, value in matches1:
-                field_tag = field_tag.strip()
-                value = value.strip()
-                if not value:
-                    continue
-                add_field_to_record(current_record, field_tag, value)
-            
-            # Pattern 2: <b>📞Telephone:</b> value (no code tags)
-            pattern2 = re.compile(r'<b>(.+?)</b>\s*([^<]+)(?=<br|$)', re.DOTALL)
-            matches2 = pattern2.findall(part)
-            
-            for field_tag, value in matches2:
-                field_tag = field_tag.strip()
-                value = value.strip()
-                if not value or len(value) < 2:
-                    continue
-                # Skip if value is just whitespace or common non-data
-                if value in ['', ' ', ':', '-']:
-                    continue
-                add_field_to_record(current_record, field_tag, value)
-            
-            # Only add record if it has at least one meaningful field
-            if len(current_record) > 1:
-                # Clean up - convert single-item arrays to single values
-                for key in ["phones", "addresses", "emails"]:
-                    if key in current_record and isinstance(current_record[key], list) and len(current_record[key]) == 1:
-                        current_record[key] = current_record[key][0]
-                all_records.append(current_record)
-    
-    return all_records
+def is_record_start_field(field_tag: str) -> bool:
+    """Check if this field typically starts a new record"""
+    record_starters = [
+        "📞Telephone", "📞Phone", "📞Mobile",
+        "📩Email", "📩E-mail",
+        "🏘️Adres", "🏘️Address"
+    ]
+    for starter in record_starters:
+        if starter in field_tag:
+            return True
+    return False
 
+# =========================
+# ADD FIELD TO RECORD
+# =========================
 
 def add_field_to_record(record: Dict, field_tag: str, value: str):
     """Add field to record with proper mapping"""
@@ -236,17 +168,116 @@ def add_field_to_record(record: Dict, field_tag: str, value: str):
 
 
 # =========================
-# GET SOURCE TITLE FROM BLOCK
+# HTML PARSER - PROPER RECORD SPLITTING
 # =========================
 
-def get_block_source(block) -> str:
-    """Extract source title from block"""
-    title_elem = block.find("div", class_="block-title")
-    if title_elem:
-        text = title_elem.get_text(strip=True)
-        # Keep original text with emoji for identification
-        return text
-    return "Unknown"
+def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
+    """
+    Parse LeakBase HTML and extract structured records
+    Properly splits records within each block using intelligent grouping
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+    all_records = []
+    
+    # Find all block elements
+    blocks = soup.find_all("div", class_="block")
+    
+    for block in blocks:
+        # Extract source title
+        source = "Unknown"
+        title_elem = block.find("div", class_="block-title")
+        if title_elem:
+            source = title_elem.get_text(strip=True)
+        
+        # Get block-text content
+        text_elem = block.find("div", class_="block-text")
+        if not text_elem:
+            continue
+        
+        # Get raw HTML content
+        html_text = str(text_elem)
+        
+        # Extract all field-value pairs with their positions
+        # Pattern: <b>FIELD</b> ... <code>VALUE</code> or just text after
+        field_pattern = re.compile(r'<b>(.+?)</b>\s*(?:<code>(.*?)</code>|([^<]+?)(?=<br|<b|$))', re.DOTALL)
+        
+        fields = []
+        for match in field_pattern.finditer(html_text):
+            field_tag = match.group(1).strip()
+            value = match.group(2) or match.group(3)
+            if value:
+                value = value.strip()
+                value = re.sub(r'<[^>]+>', '', value)
+                if value:
+                    fields.append((field_tag, value, match.start()))
+        
+        if not fields:
+            continue
+        
+        # Group fields into records
+        records_in_block = []
+        current_record = {"source": source}
+        record_has_content = False
+        
+        for i, (field_tag, value, pos) in enumerate(fields):
+            # Check if this field starts a new record
+            # New record starts when:
+            # 1. Current record already has content AND
+            # 2. This field is a record starter (like a new phone number) AND
+            # 3. Not the first field
+            if record_has_content and is_record_start_field(field_tag) and i > 0:
+                # Save current record and start new one
+                if len(current_record) > 1:
+                    # Clean up single-item arrays
+                    for key in ["phones", "addresses", "emails"]:
+                        if key in current_record and isinstance(current_record[key], list) and len(current_record[key]) == 1:
+                            current_record[key] = current_record[key][0]
+                    records_in_block.append(current_record)
+                current_record = {"source": source}
+                record_has_content = False
+            
+            # Add field to current record
+            add_field_to_record(current_record, field_tag, value)
+            record_has_content = True
+        
+        # Add last record
+        if len(current_record) > 1:
+            for key in ["phones", "addresses", "emails"]:
+                if key in current_record and isinstance(current_record[key], list) and len(current_record[key]) == 1:
+                    current_record[key] = current_record[key][0]
+            records_in_block.append(current_record)
+        
+        # Also try splitting by double br tags as backup
+        if not records_in_block:
+            # Split by double br tags
+            parts = re.split(r'<br>\s*<br>', html_text)
+            for part in parts:
+                if not part.strip() or '<b>' not in part:
+                    continue
+                
+                current_record = {"source": source}
+                found_fields = False
+                
+                # Extract fields from this part
+                part_fields = re.findall(r'<b>(.+?)</b>\s*(?:<code>(.*?)</code>|([^<]+?)(?=<br|<b|$))', part, re.DOTALL)
+                for field_tag, val1, val2 in part_fields:
+                    value = val1 or val2
+                    if value:
+                        value = value.strip()
+                        value = re.sub(r'<[^>]+>', '', value)
+                        if value:
+                            add_field_to_record(current_record, field_tag.strip(), value)
+                            found_fields = True
+                
+                if found_fields and len(current_record) > 1:
+                    for key in ["phones", "addresses", "emails"]:
+                        if key in current_record and isinstance(current_record[key], list) and len(current_record[key]) == 1:
+                            current_record[key] = current_record[key][0]
+                    records_in_block.append(current_record)
+        
+        all_records.extend(records_in_block)
+    
+    return all_records
 
 
 # =========================
@@ -262,17 +293,13 @@ async def search(data: dict):
         
         print(f"\n=== SEARCH: {message} ===")
 
-        # Send message to bot
         sent_message = await client.send_message(BOT_USERNAME, message)
         print("Message sent")
 
-        # Wait for bot reply
         await asyncio.sleep(3)
 
-        # Get bot reply
         messages = await client.get_messages(BOT_USERNAME, limit=10)
         
-        # Find the bot's reply (not our message)
         reply_message = None
         for msg in messages:
             if not msg.out and msg.id > sent_message.id:
@@ -284,7 +311,6 @@ async def search(data: dict):
 
         print(f"Reply found: {reply_message.id}")
 
-        # Try to click download button
         file_path = None
 
         if reply_message.buttons:
@@ -298,7 +324,6 @@ async def search(data: dict):
                 if file_path:
                     break
 
-            # Wait for file after clicking
             for attempt in range(30):
                 await asyncio.sleep(2)
                 latest = await client.get_messages(BOT_USERNAME, limit=5)
@@ -310,7 +335,6 @@ async def search(data: dict):
                 if file_path:
                     break
 
-        # If no file from button, check if reply message contains HTML
         if not file_path and reply_message.message:
             html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', 
                                    reply_message.message, re.DOTALL | re.IGNORECASE)
@@ -322,7 +346,6 @@ async def search(data: dict):
                 file_path = temp_path
                 print(f"Extracted HTML from message")
 
-        # Parse the file
         if file_path and os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 html_content = f.read()
@@ -330,7 +353,6 @@ async def search(data: dict):
             records = parse_leakbase_html(html_content)
             print(f"Parsed {len(records)} records")
             
-            # Clean up temp file
             if file_path and "temp_" in file_path:
                 try:
                     os.remove(file_path)
@@ -436,9 +458,6 @@ async def home():
                 input { width: 70%; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
                 button { padding: 12px 24px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
                 button:hover { background: #0056b3; }
-                .result { margin-top: 20px; padding: 20px; background: #f5f5f5; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; }
-                .error { color: red; }
-                pre { background: #fff; padding: 10px; overflow-x: auto; font-size: 12px; }
             </style>
         </head>
         <body>
@@ -460,6 +479,7 @@ async def home():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
 
 # =========================
 # RUN: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
