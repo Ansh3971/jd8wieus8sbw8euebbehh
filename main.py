@@ -1,16 +1,12 @@
 import os
 import re
 import asyncio
-from typing import Dict, Any
+import json
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-
+from flask import Flask, request, jsonify, render_template_string
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-
 from bs4 import BeautifulSoup
-
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,21 +17,16 @@ SESSION = os.getenv("SESSION")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
-app = FastAPI(title="Telegram HTML Scraper API")
+app = Flask(__name__)
 
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-@app.on_event("startup")
-async def startup():
-    await client.start()
-    print("Telegram Client Connected")
-
-@app.on_event("shutdown")
-async def shutdown():
-    await client.disconnect()
+# =========================
+# HELPER FUNCTIONS
+# =========================
 
 def clean_key(key):
     key = re.sub(r'[^\w\s]', '', key)
@@ -62,31 +53,6 @@ def get_field_name(raw_key):
         if key.lower() in name.lower():
             return value
     return name.replace(" ", "")
-
-def parse_line(line):
-    line = line.strip()
-    if not line:
-        return None, None
-    
-    emoji_pattern = re.compile(r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$')
-    match = emoji_pattern.match(line)
-    
-    if match:
-        key_raw = match.group(2)
-        value = match.group(3).strip()
-        return get_field_name(key_raw), value
-    
-    if line.startswith('📞'):
-        phone_match = re.search(r'(\d+)', line)
-        if phone_match:
-            return "Phone", phone_match.group(1)
-    
-    if line.startswith('📩'):
-        email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', line)
-        if email_match:
-            return "Email", email_match.group(1)
-    
-    return None, None
 
 def parse_html_records(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
@@ -177,16 +143,132 @@ def parse_html_records(html_content):
     
     return records
 
-@app.post("/search")
-async def search(request: Request):
+def parse_line(line):
+    line = line.strip()
+    if not line:
+        return None, None
+    
+    emoji_pattern = re.compile(r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$')
+    match = emoji_pattern.match(line)
+    
+    if match:
+        key_raw = match.group(2)
+        value = match.group(3).strip()
+        return get_field_name(key_raw), value
+    
+    if line.startswith('📞'):
+        phone_match = re.search(r'(\d+)', line)
+        if phone_match:
+            return "Phone", phone_match.group(1)
+    
+    if line.startswith('📩'):
+        email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', line)
+        if email_match:
+            return "Email", email_match.group(1)
+    
+    return None, None
+
+def parse_text_records(text):
+    if not text:
+        return []
+    
+    if "Some data did not fit this message" in text:
+        text = text.split("Some data did not fit this message")[0]
+    
+    lines = text.splitlines()
+    records = []
+    current_record = {}
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        if not line:
+            if current_record:
+                records.append(current_record)
+                current_record = {}
+            i += 1
+            continue
+        
+        field_name, value = parse_line(line)
+        
+        if field_name and value:
+            if field_name in current_record:
+                count = 2
+                while f"{field_name}{count}" in current_record:
+                    count += 1
+                current_record[f"{field_name}{count}"] = value
+            else:
+                current_record[field_name] = value
+        else:
+            if current_record and line:
+                if "Address" in current_record:
+                    current_record["Address"] = current_record["Address"] + " " + line
+                elif len(current_record) > 0:
+                    last_key = list(current_record.keys())[-1]
+                    current_record[last_key] = current_record[last_key] + " " + line
+        
+        i += 1
+    
+    if current_record:
+        records.append(current_record)
+    
+    return [r for r in records if r]
+
+# =========================
+# TELEGRAM CLIENT EVENT LOOP
+# =========================
+
+def run_async(coro):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        body = await request.json()
-        message = body.get("message", "")
-        
-        if not message:
-            return {"status": False, "error": "message required"}
-        
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+# =========================
+# FLASK ROUTES
+# =========================
+
+@app.route('/')
+def home():
+    return render_template_string('''
+    <html>
+        <head><title>Telegram HTML Scraper API</title></head>
+        <body style="font-family: Arial; padding: 40px;">
+            <h2>Telegram HTML Scraper API</h2>
+            <form action="/search" method="get">
+                <input type="text" name="q" placeholder="Enter query" 
+                       style="width:300px; height:40px; padding:10px;">
+                <button type="submit" style="height:40px;">Search</button>
+            </form>
+        </body>
+    </html>
+    ''')
+
+@app.route('/search')
+def search_get():
+    q = request.args.get('q')
+    if not q:
+        return jsonify({"status": False, "error": "Missing 'q' parameter"})
+    return run_async(do_search(q))
+
+@app.route('/search', methods=['POST'])
+def search_post():
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": False, "error": "Invalid JSON"})
+    q = data.get('message')
+    if not q:
+        return jsonify({"status": False, "error": "Missing 'message' field"})
+    return run_async(do_search(q))
+
+async def do_search(message):
+    try:
         print(f"Query: {message}")
+        
+        await client.start()
         
         sent = await client.send_message(BOT_USERNAME, message)
         
@@ -235,6 +317,9 @@ async def search(request: Request):
             return {"status": True, "query": message, "record_count": len(records), "data": records}
         
         if target_message.message:
+            records = parse_text_records(target_message.message)
+            if records:
+                return {"status": True, "query": message, "record_count": len(records), "data": records, "source": "text_message"}
             return {"status": False, "error": "No HTML file received", "raw_message": target_message.message[:500]}
         
         return {"status": False, "error": "Could not extract any data"}
@@ -242,23 +327,9 @@ async def search(request: Request):
     except Exception as e:
         return {"status": False, "error": str(e)}
 
-@app.get("/test")
-async def test(q: str):
-    from fastapi import Request
-    return await search(Request, body={"message": q})
+# =========================
+# RUN
+# =========================
 
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <html>
-        <head><title>Telegram HTML Scraper API</title></head>
-        <body style="font-family: Arial; padding: 40px;">
-            <h2>Telegram HTML Scraper API</h2>
-            <form action="/test" method="get">
-                <input type="text" name="q" placeholder="Enter query" 
-                       style="width:300px; height:40px; padding:10px;">
-                <button type="submit" style="height:40px;">Search</button>
-            </form>
-        </body>
-    </html>
-    """
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
