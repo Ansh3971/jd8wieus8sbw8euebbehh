@@ -1,7 +1,6 @@
 import os
 import re
 import asyncio
-from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -27,7 +26,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 # =========================
 
 app = FastAPI(
-    title="Telegram Bot API - Stable Multi Page Scraper"
+    title="Telegram Bot API"
 )
 
 # =========================
@@ -65,266 +64,269 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# CLEAN KEY
+# CLEAN FIELD NAME
 # =========================
 
 def clean_key(key):
-
-    key = re.sub(
-        r'[^\w\s]',
-        '',
-        key
-    )
-
-    key = re.sub(
-        r'[\U00010000-\U0010FFFF\u2600-\u27BF]',
-        '',
-        key
-    )
-
+    key = re.sub(r'[^\w\s]', '', key)
+    key = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', key)
     key = key.strip()
-
     words = key.split()
-
-    return ''.join(
-        word.capitalize()
-        for word in words
-    )
+    return ' '.join(word.capitalize() for word in words)
 
 # =========================
-# FIELD NAME NORMALIZER
+# NORMALIZE FIELD NAMES
 # =========================
 
 def get_field_name(raw_key):
-
-    name = re.sub(
-        r'[\U00010000-\U0010FFFF\u2600-\u27BF]',
-        '',
-        raw_key
-    )
-
+    name = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', raw_key)
     name = name.strip()
-
     name = clean_key(name)
 
     mapping = {
-
         "Email": "Email",
-
         "Telephone": "Phone",
-
         "Phone": "Phone",
-
-        "Adres": "Address",
-
-        "Address": "Address",
-
-        "DocumentNumber": "DocumentNumber",
-
+        "Adres": "Adres",
+        "Address": "Adres",
+        "Document number": "DocumentNumber",
         "Document": "DocumentNumber",
-
-        "FullName": "FullName",
-
-        "TheNameOfTheFather": "FatherName",
-
-        "FatherName": "FatherName",
-
+        "Full name": "FullName",
+        "Fullname": "FullName",
+        "The name of the father": "FatherName",
+        "Father name": "FatherName",
         "Region": "Region",
-
         "Nick": "Nick",
-
-        "Nickname": "Nick"
+        "Nickname": "Nick",
+        "Password": "Password",
+        "Encrypted password": "EncryptedPassword",
+        "Date": "Date",
+        "The date of registration": "RegistrationDate",
+        "Last activity": "LastActivity",
+        "IP": "IP",
+        "City": "City",
+        "Country": "Country",
+        "Name": "Name",
+        "Surname": "Surname",
+        "Gender": "Gender",
+        "Currency": "Currency",
+        "Sum": "Sum",
+        "Browser": "Browser",
+        "Source": "Source"
     }
 
     for key, value in mapping.items():
-
         if key.lower() in name.lower():
             return value
 
     return name.replace(" ", "")
 
 # =========================
-# PARSE LINE
+# PARSE SINGLE LINE
 # =========================
 
 def parse_line(line):
-
     line = line.strip()
 
     if not line:
         return None, None
 
-    if ":" not in line:
-        return None, None
+    line = re.sub(r'<.*?>', '', line)
 
-    parts = line.split(":", 1)
+    pattern = r'^[^\w\s]*\s*([^:]+):\s*(.+)$'
+    match = re.match(pattern, line)
 
-    key_raw = parts[0].strip()
+    if match:
+        raw_key = match.group(1).strip()
+        value = match.group(2).strip()
 
-    value = parts[1].strip()
+        raw_key = re.sub(r'^[^\w]+', '', raw_key)
 
-    if not value:
-        return None, None
+        field = get_field_name(raw_key)
 
-    field_name = get_field_name(
-        key_raw
-    )
+        value = value.replace("`", "").strip()
 
-    return field_name, value
+        return field, value
+
+    return None, None
 
 # =========================
-# PARSE PAGE
+# CHECK DATA LINE
 # =========================
 
-def parse_page_text(text):
+def is_data_line(line):
+    line = line.strip()
 
+    if not line:
+        return False
+
+    return ":" in line
+
+# =========================
+# PARSE MESSAGE
+# =========================
+
+def parse_message(text):
     if not text:
-        return []
+        return {}
+
+    # remove truncation note
+    if "Some data did not fit this message" in text:
+        text = text.split("Some data did not fit this message")[0]
 
     lines = text.splitlines()
 
-    records = []
+    source_title = "Data Source"
+    source_description = ""
 
-    current_record = {}
+    # =========================
+    # FIND TITLE
+    # =========================
 
-    for raw_line in lines:
-
-        line = raw_line.strip()
-
-        if not line:
-            continue
-
-        # SKIP PAGE TEXT
-        if (
-            "Some data did not fit this message"
-            in line
-        ):
-            continue
-
-        # FIELD
-        field_name, value = parse_line(
-            line
-        )
-
-        if field_name and value:
-
-            # START NEW RECORD
-            if (
-                field_name in [
-                    "Phone",
-                    "Email",
-                    "FullName",
-                    "Name"
-                ]
-                and current_record
-                and (
-                    "Phone" in current_record
-                    or "Email" in current_record
-                )
-            ):
-
-                records.append(
-                    current_record
-                )
-
-                current_record = {}
-
-            # DUPLICATES
-            if field_name in current_record:
-
-                count = 2
-
-                while (
-                    f"{field_name}{count}"
-                    in current_record
-                ):
-                    count += 1
-
-                current_record[
-                    f"{field_name}{count}"
-                ] = value
-
-            else:
-
-                current_record[
-                    field_name
-                ] = value
-
-    # LAST RECORD
-    if current_record:
-        records.append(current_record)
-
-    return records
-
-# =========================
-# SOURCE META
-# =========================
-
-def get_source_metadata(text):
-
-    lines = text.splitlines()
-
-    title = "Data Source"
-
-    description = ""
+    title_index = 0
 
     for i, line in enumerate(lines):
-
         line = line.strip()
 
         if not line:
             continue
 
-        if (
-            ":" not in line
-            and len(line) < 100
-        ):
-
-            title = line
-
-            desc = []
-
-            for j in range(i + 1, len(lines)):
-
-                next_line = lines[j].strip()
-
-                if not next_line:
-                    continue
-
-                if ":" in next_line:
-                    break
-
-                desc.append(next_line)
-
-            description = " ".join(desc)
-
+        if not is_data_line(line):
+            source_title = line
+            title_index = i
             break
 
-    return title, description
+    # =========================
+    # FIND DESCRIPTION
+    # =========================
+
+    desc_lines = []
+
+    data_start = 0
+
+    for i in range(title_index + 1, len(lines)):
+        line = lines[i].strip()
+
+        if not line:
+            continue
+
+        if is_data_line(line):
+            data_start = i
+            break
+
+        desc_lines.append(line)
+
+    source_description = " ".join(desc_lines).strip()
+
+    # =========================
+    # PARSE RECORDS
+    # =========================
+
+    records = []
+
+    current_record = {}
+
+    for i in range(data_start, len(lines)):
+
+        line = lines[i].strip()
+
+        if not line:
+            continue
+
+        # stop note
+        if "Some data did not fit this message" in line:
+            break
+
+        field, value = parse_line(line)
+
+        if not field:
+            continue
+
+        # =========================
+        # NEW RECORD DETECTION
+        # =========================
+
+        # If Phone/Email starts again
+        if field in ["Phone", "Email"] and current_record:
+            if field in current_record:
+                records.append(current_record)
+                current_record = {}
+
+        # =========================
+        # DUPLICATE FIELD HANDLING
+        # =========================
+
+        if field in current_record:
+            count = 2
+
+            while f"{field}{count}" in current_record:
+                count += 1
+
+            current_record[f"{field}{count}"] = value
+
+        else:
+            current_record[field] = value
+
+    # add final record
+    if current_record:
+        records.append(current_record)
+
+    # remove empty
+    records = [r for r in records if r]
+
+    return {
+        "source1": {
+            "title": source_title,
+            "description": source_description,
+            "records": records
+        }
+    }
 
 # =========================
-# CHECK NEXT BUTTON
+# WAIT FOR MESSAGE EDIT
 # =========================
 
-async def has_next_button(message):
+async def wait_for_edited_message(message, old_text, timeout=15):
+    """
+    Wait until telegram edits the same message
+    """
+
+    for _ in range(timeout):
+
+        await asyncio.sleep(1.5)
+
+        try:
+            updated = await client.get_messages(
+                BOT_USERNAME,
+                ids=message.id
+            )
+
+            if updated and updated.message != old_text:
+                return updated
+
+        except Exception as e:
+            print("Edit wait error:", e)
+
+    return None
+
+# =========================
+# HAS NEXT BUTTON
+# =========================
+
+def has_next_button(message):
 
     if not message.reply_markup:
         return False
 
     try:
-
         rows = message.reply_markup.rows
 
         for row in rows:
             for button in row.buttons:
 
-                txt = button.text
+                txt = button.text.strip()
 
-                if (
-                    txt == "➡"
-                    or txt == "→"
-                    or "next" in txt.lower()
-                ):
+                if txt in ["➡", "→", "Next", "›"]:
                     return True
 
     except:
@@ -336,71 +338,41 @@ async def has_next_button(message):
 # CLICK NEXT BUTTON
 # =========================
 
-async def click_next_button(message):
+async def click_next(message):
 
     if not message.reply_markup:
         return None
 
-    old_text = message.message or ""
+    rows = message.reply_markup.rows
 
-    try:
+    for row in rows:
+        for button in row.buttons:
 
-        rows = message.reply_markup.rows
+            txt = button.text.strip()
 
-        for row in rows:
-            for button in row.buttons:
+            if txt in ["➡", "→", "Next", "›"]:
 
-                button_text = button.text
+                old_text = message.message
 
-                if (
-                    button_text == '➡'
-                    or button_text == '→'
-                    or 'next' in button_text.lower()
-                ):
+                try:
+                    await message.click(text=txt)
 
-                    print(f"Clicking: {button_text}")
-
-                    # CLICK BUTTON
-                    await message.click(
-                        text=button_text
+                    updated = await wait_for_edited_message(
+                        message,
+                        old_text,
+                        timeout=20
                     )
 
-                    # WAIT FOR MESSAGE EDIT
-                    for _ in range(20):
+                    return updated
 
-                        await asyncio.sleep(1)
-
-                        updated = await client.get_messages(
-                            BOT_USERNAME,
-                            ids=message.id
-                        )
-
-                        if not updated:
-                            continue
-
-                        new_text = updated.message or ""
-
-                        if (
-                            new_text.strip()
-                            and new_text != old_text
-                        ):
-
-                            print("New page loaded")
-
-                            return updated
-
-                    print("Page update timeout")
-
+                except Exception as e:
+                    print("Click Error:", e)
                     return None
-
-    except Exception as e:
-
-        print("Button Click Error:", e)
 
     return None
 
 # =========================
-# SEARCH
+# MAIN SEARCH
 # =========================
 
 @app.post("/search")
@@ -411,26 +383,29 @@ async def search(data: Query):
         print("\n========== NEW REQUEST ==========")
         print("Query:", data.message)
 
-        # SEND MESSAGE
         sent = await client.send_message(
             BOT_USERNAME,
             data.message
         )
 
         print("Message Sent")
+        print("Sent ID:", sent.id)
 
-        # WAIT FOR FIRST REPLY
         target_message = None
 
-        for i in range(30):
+        # =========================
+        # WAIT BOT REPLY
+        # =========================
 
-            print(f"Checking {i+1}")
+        for i in range(40):
+
+            print(f"Checking Messages Attempt {i+1}")
 
             await asyncio.sleep(2)
 
             messages = await client.get_messages(
                 BOT_USERNAME,
-                limit=15
+                limit=20
             )
 
             for msg in messages:
@@ -444,153 +419,84 @@ async def search(data: Query):
                 if msg.id <= sent.id:
                     continue
 
-                if (
-                    msg.message.strip()
-                    ==
-                    data.message.strip()
-                ):
+                if msg.message.strip() == data.message.strip():
                     continue
 
                 target_message = msg
 
-                print("Bot Reply Found")
+                print("\nFOUND BOT REPLY")
+                print(target_message.message[:300])
 
                 break
 
             if target_message:
                 break
 
-        # TIMEOUT
         if not target_message:
-
             return {
                 "status": False,
                 "error": "Bot reply timeout"
             }
 
         # =========================
-        # PAGINATION
+        # PAGINATION SCRAPER
         # =========================
 
-        all_records = []
-
-        current_message = target_message
-
-        page_num = 1
-
-        max_pages = 50
+        full_text = ""
 
         processed_pages = set()
 
-        source_title = None
+        current_message = target_message
 
-        source_description = None
+        max_pages = 50
 
-        while (
-            current_message
-            and page_num <= max_pages
-        ):
+        for page in range(max_pages):
 
-            print(f"\nProcessing Page {page_num}")
+            if not current_message:
+                break
 
-            # DUPLICATE PAGE CHECK
-            page_signature = (
-                current_message.message[:300]
-            )
+            current_text = current_message.message.strip()
 
-            if (
-                page_signature
-                in processed_pages
-            ):
+            text_hash = hash(current_text)
 
+            # avoid duplicate page
+            if text_hash in processed_pages:
                 print("Duplicate page detected")
-
                 break
 
-            processed_pages.add(
-                page_signature
-            )
+            processed_pages.add(text_hash)
 
-            # SOURCE META
-            if source_title is None:
+            print(f"\nSCRAPING PAGE {page + 1}")
 
-                source_title, source_description = (
-                    get_source_metadata(
-                        current_message.message
-                    )
-                )
+            full_text += "\n\n" + current_text
 
-            # PARSE PAGE
-            page_records = parse_page_text(
-                current_message.message
-            )
-
-            print(
-                f"Records Found: {len(page_records)}"
-            )
-
-            all_records.extend(
-                page_records
-            )
-
-            # CHECK NEXT BUTTON
-            has_next = await has_next_button(
-                current_message
-            )
-
-            if not has_next:
-
-                print("No next button")
-
+            # no next button
+            if not has_next_button(current_message):
+                print("No next button found")
                 break
 
-            # NEXT PAGE
-            next_message = await click_next_button(
-                current_message
-            )
+            print("NEXT BUTTON FOUND")
 
-            if not next_message:
+            next_page = await click_next(current_message)
 
+            if not next_page:
                 print("Failed loading next page")
-
                 break
 
-            current_message = next_message
+            current_message = next_page
 
-            page_num += 1
-
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
 
         # =========================
-        # RESPONSE
+        # PARSE FINAL DATA
         # =========================
+
+        parsed = parse_message(full_text)
 
         return {
-
             "status": True,
-
             "query": data.message,
-
-            "data": {
-
-                "source1": {
-
-                    "title": source_title,
-
-                    "description": source_description,
-
-                    "records": all_records
-                }
-            },
-
-            "meta": {
-
-                "pages_scraped": page_num,
-
-                "total_records": len(
-                    all_records
-                )
-            }
+            "data": parsed
         }
 
     except Exception as e:
@@ -604,15 +510,12 @@ async def search(data: Query):
         }
 
 # =========================
-# TEST
+# TEST ENDPOINT
 # =========================
 
 @app.get("/test")
 async def test(q: str):
-
-    return await search(
-        Query(message=q)
-    )
+    return await search(Query(message=q))
 
 # =========================
 # ROOT
@@ -620,12 +523,9 @@ async def test(q: str):
 
 @app.get("/")
 async def root():
-
     return {
-
         "status": True,
-
-        "message": "Stable Multi Page Telegram Scraper API Running"
+        "message": "Telegram Multi Page Scraper Running"
     }
 
 # =========================
