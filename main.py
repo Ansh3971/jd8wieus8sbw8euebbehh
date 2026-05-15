@@ -1,15 +1,19 @@
 import os
 import re
+import json
 import asyncio
-from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+
 from pydantic import BaseModel
+
+from dotenv import load_dotenv
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 
 # =========================
 # LOAD ENV
@@ -21,14 +25,16 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
+DOWNLOAD_BUTTON = os.getenv(
+    "DOWNLOAD_BUTTON",
+    "Download"
+)
 
 # =========================
 # FASTAPI
 # =========================
 
-app = FastAPI(
-    title="Telegram Bot API - Multi-Page Scraper"
-)
+app = FastAPI()
 
 # =========================
 # TELEGRAM CLIENT
@@ -38,6 +44,17 @@ client = TelegramClient(
     StringSession(SESSION),
     API_ID,
     API_HASH
+)
+
+# =========================
+# DOWNLOAD FOLDER
+# =========================
+
+DOWNLOAD_DIR = "downloads"
+
+os.makedirs(
+    DOWNLOAD_DIR,
+    exist_ok=True
 )
 
 # =========================
@@ -53,8 +70,12 @@ class Query(BaseModel):
 
 @app.on_event("startup")
 async def startup():
+
     await client.start()
-    print("Telegram Client Connected")
+
+    print(
+        "Telegram Client Started"
+    )
 
 # =========================
 # SHUTDOWN
@@ -62,476 +83,430 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+
     await client.disconnect()
 
 # =========================
-# CLEAN KEY
+# HOME PAGE
 # =========================
 
-def clean_key(key):
-    key = re.sub(r'[^\w\s]', '', key)
-    key = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', key)
-    key = key.strip()
-    words = key.split()
-    return ' '.join(word.capitalize() for word in words)
+@app.get(
+    "/",
+    response_class=HTMLResponse
+)
+async def home():
+
+    return """
+    <html>
+
+        <head>
+            <title>
+                Universal HTML Parser API
+            </title>
+        </head>
+
+        <body
+            style="
+                font-family: Arial;
+                padding: 40px;
+            "
+        >
+
+            <h2>
+                Universal HTML Parser API
+            </h2>
+
+            <form
+                action="/test"
+                method="get"
+            >
+
+                <input
+                    type="text"
+                    name="q"
+                    placeholder="Enter query"
+                    style="
+                        width:300px;
+                        height:40px;
+                        padding:10px;
+                    "
+                >
+
+                <button
+                    type="submit"
+                    style="
+                        height:40px;
+                    "
+                >
+                    Search
+                </button>
+
+            </form>
+
+        </body>
+
+    </html>
+    """
 
 # =========================
-# GET FIELD NAME
+# ENHANCED HTML PARSER - FLAT RECORDS
 # =========================
 
-def get_field_name(raw_key):
-    name = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', raw_key)
-    name = name.strip()
-    name = clean_key(name)
+def extract_flat_records(html):
+    """
+    Extracts flat array of records from HTML.
+    Each record is an object with fields like Channel, Developer, Email, Mobile, Address, etc.
+    """
+    soup = BeautifulSoup(html, "html.parser")
     
-    mapping = {
-        "Email": "Email",
-        "Telephone": "Phone",
-        "Phone": "Phone",
-        "Adres": "Adres",
-        "Address": "Adres",
-        "Document number": "DocumentNumber",
-        "Document": "DocumentNumber",
-        "Full name": "FullName",
-        "Fullname": "FullName",
-        "The name of the father": "FatherName",
-        "Father name": "FatherName",
-        "Region": "Region",
-        "Nick": "Nick",
-        "Nickname": "Nick"
-    }
-    
-    for key, value in mapping.items():
-        if key.lower() in name.lower():
-            return value
-    
-    return name.replace(" ", "")
-
-# =========================
-# PARSE VALUE FROM LINE
-# =========================
-
-def parse_line(line):
-    line = line.strip()
-    if not line:
-        return None, None
-    
-    emoji_pattern = re.compile(r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$')
-    match = emoji_pattern.match(line)
-    
-    if match:
-        key_raw = match.group(2)
-        value = match.group(3).strip()
-        field_name = get_field_name(key_raw)
-        return field_name, value
-    
-    if line.startswith('📞'):
-        phone_match = re.search(r'(\d+)', line)
-        if phone_match:
-            return "Phone", phone_match.group(1)
-    
-    if line.startswith('📩'):
-        email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', line)
-        if email_match:
-            return "Email", email_match.group(1)
-    
-    return None, None
-
-# =========================
-# PARSE SINGLE PAGE
-# =========================
-
-def parse_page_text(text: str) -> List[Dict[str, Any]]:
-    if not text:
-        return []
-    
-    if "Some data did not fit this message" in text:
-        text = text.split("Some data did not fit this message")[0]
-    
-    lines = text.splitlines()
-    
-    data_start_idx = 0
-    source_title = None
-    
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and re.match(r'^[\U00010000-\U0010FFFF\u2600-\u27BF]', stripped):
-            if not source_title:
-                source_title = stripped
-                data_start_idx = i + 1
-                break
-    
-    if not source_title:
-        data_start_idx = 0
-    
-    for i in range(data_start_idx, len(lines)):
-        line = lines[i].strip()
-        if not line:
-            continue
-        if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', line):
-            data_start_idx = i
-            break
+    # Get all text lines
+    text = soup.get_text(separator="\n", strip=True)
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
     
     records = []
     current_record = {}
-    i = data_start_idx
     
+    # Field patterns
+    field_patterns = {
+        "channel": r"^📢\s*CHANNEL:\s*(.+)",
+        "developer": r"^👨‍💻\s*DEVELOPER:\s*(.+)",
+        "email": r"^Email:\s*(.+)",
+        "mobile": r"^Mobile:\s*(.+)",
+        "mobile_alt": r"^Mobile phone:\s*(.+)",
+        "address": r"^Address:\s*(.+)",
+        "document": r"^Document number:\s*(.+)",
+        "fullname": r"^Full name:\s*(.+)",
+        "father": r"^The name of the father:\s*(.+)",
+        "region": r"^Region:\s*(.+)",
+        "passport": r"^Passport number:\s*(.+)",
+        "nick": r"^Nick:\s*(.+)",
+        "login": r"^login:\s*(.+)",
+        "city": r"^City:\s*(.+)",
+        "stat": r"^Stat:\s*(.+)",
+        "postal": r"^Postal code:\s*(.+)",
+        "gender": r"^Gender:\s*(.+)",
+        "age": r"^Age:\s*(.+)",
+        "car": r"^Car number:\s*(.+)",
+        "ip": r"^IP:\s*(.+)",
+        "password": r"^Encrypted password:\s*(.+)",
+        "plain_password": r"^Password:\s*(.+)",
+        "date_reg": r"^The date of registration:\s*(.+)",
+        "last_activity": r"^Last activity:\s*(.+)",
+        "level": r"^Level:\s*(.+)",
+        "education": r"^Education:\s*(.+)",
+        "company": r"^The name of the company:\s*(.+)",
+        "category": r"^Category:\s*(.+)",
+        "link": r"^Link:\s*(.+)",
+        "instagram": r"^Instagram identifier:\s*(.+)",
+        "name": r"^Name:\s*(.+)",
+        "surname": r"^Surname:\s*(.+)",
+        "prefix": r"^Prefix:\s*(.+)",
+    }
+    
+    i = 0
     while i < len(lines):
-        line = lines[i].strip()
+        line = lines[i]
         
-        if not line:
+        # Check for separator lines
+        if "---" in line or "===" in line or line.startswith("-----------------------------------"):
+            # Separator: save current record if not empty
             if current_record:
                 records.append(current_record)
                 current_record = {}
             i += 1
             continue
         
-        if "Some data did not fit this message" in line:
-            break
+        # Check for channel/developer headers (start of new record)
+        channel_match = re.match(field_patterns["channel"], line, re.IGNORECASE)
+        developer_match = re.match(field_patterns["developer"], line, re.IGNORECASE)
         
-        field_name, value = parse_line(line)
+        if channel_match or developer_match:
+            # Save previous record
+            if current_record:
+                records.append(current_record)
+                current_record = {}
+            
+            if channel_match:
+                current_record["channel"] = channel_match.group(1).strip()
+            if developer_match:
+                current_record["developer"] = developer_match.group(1).strip()
+            i += 1
+            continue
         
-        if field_name and value:
-            if field_name in current_record:
-                count = 2
-                while f"{field_name}{count}" in current_record:
-                    count += 1
-                current_record[f"{field_name}{count}"] = value
-            else:
-                current_record[field_name] = value
-        else:
-            if current_record and line:
-                if "Adres" in current_record:
-                    current_record["Adres"] = current_record["Adres"] + " " + line
-                elif len(current_record) > 0:
-                    last_key = list(current_record.keys())[-1]
-                    current_record[last_key] = current_record[last_key] + " " + line
+        # Try to match any field pattern
+        matched = False
+        for field_key, pattern in field_patterns.items():
+            match = re.match(pattern, line, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                # Clean up field name for output
+                clean_key = field_key.replace("_alt", "").replace("plain_", "")
+                
+                # Handle multiple values (like multiple mobiles)
+                if clean_key in current_record:
+                    if isinstance(current_record[clean_key], list):
+                        current_record[clean_key].append(value)
+                    else:
+                        current_record[clean_key] = [current_record[clean_key], value]
+                else:
+                    current_record[clean_key] = value
+                matched = True
+                break
+        
+        if not matched:
+            # Check for "Mobile: 919999988888" pattern without colon space variation
+            mobile_match = re.match(r"^Mobile:\s*(\d+)", line)
+            if mobile_match:
+                value = mobile_match.group(1).strip()
+                if "mobile" in current_record:
+                    if isinstance(current_record["mobile"], list):
+                        current_record["mobile"].append(value)
+                    else:
+                        current_record["mobile"] = [current_record["mobile"], value]
+                else:
+                    current_record["mobile"] = value
+                matched = True
+        
+        if not matched:
+            # Check for plain key: value pattern (like "Name: John")
+            kv_match = re.match(r"^([A-Za-z\s]+):\s*(.+)", line)
+            if kv_match:
+                key = kv_match.group(1).strip().lower().replace(" ", "_")
+                value = kv_match.group(2).strip()
+                if key in current_record:
+                    if isinstance(current_record[key], list):
+                        current_record[key].append(value)
+                    else:
+                        current_record[key] = [current_record[key], value]
+                else:
+                    current_record[key] = value
+                matched = True
         
         i += 1
     
+    # Don't forget last record
     if current_record:
         records.append(current_record)
     
-    return [r for r in records if r]
-
-# =========================
-# GET SOURCE TITLE AND DESCRIPTION
-# =========================
-
-def get_source_metadata(text: str) -> tuple:
-    lines = text.splitlines()
+    # Post-process: merge related fields
+    for record in records:
+        # Rename keys to match desired output
+        if "fullname" in record:
+            record["Full name"] = record.pop("fullname")
+        if "father" in record:
+            record["The name of the father"] = record.pop("father")
+        if "document" in record:
+            record["Document number"] = record.pop("document")
+        if "passport" in record:
+            record["Passport number"] = record.pop("passport")
+        if "channel" in record:
+            record["📢 CHANNEL"] = record.pop("channel")
+        if "developer" in record:
+            record["👨‍💻 DEVELOPER"] = record.pop("developer")
+        if "mobile" in record:
+            record["Mobile"] = record.pop("mobile")
+        if "address" in record:
+            record["Address"] = record.pop("address")
+        if "email" in record:
+            record["Email"] = record.pop("email")
+        if "region" in record:
+            record["Region"] = record.pop("region")
+        if "nick" in record:
+            record["Nick"] = record.pop("nick")
+        if "login" in record:
+            record["login"] = record.pop("login")
+        if "city" in record:
+            record["City"] = record.pop("city")
+        if "stat" in record:
+            record["Stat"] = record.pop("stat")
+        if "postal" in record:
+            record["Postal code"] = record.pop("postal")
+        if "gender" in record:
+            record["Gender"] = record.pop("gender")
+        if "age" in record:
+            record["Age"] = record.pop("age")
+        if "car" in record:
+            record["Car number"] = record.pop("car")
+        if "ip" in record:
+            record["IP"] = record.pop("ip")
+        if "password" in record:
+            record["Encrypted password"] = record.pop("password")
+        if "plain_password" in record:
+            record["Password"] = record.pop("plain_password")
+        if "date_reg" in record:
+            record["The date of registration"] = record.pop("date_reg")
+        if "last_activity" in record:
+            record["Last activity"] = record.pop("last_activity")
+        if "level" in record:
+            record["Level"] = record.pop("level")
+        if "education" in record:
+            record["Education"] = record.pop("education")
+        if "company" in record:
+            record["The name of the company"] = record.pop("company")
+        if "category" in record:
+            record["Category"] = record.pop("category")
+        if "link" in record:
+            record["Link"] = record.pop("link")
+        if "instagram" in record:
+            record["Instagram identifier"] = record.pop("instagram")
+        if "name" in record:
+            record["Name"] = record.pop("name")
+        if "surname" in record:
+            record["Surname"] = record.pop("surname")
+        if "prefix" in record:
+            record["Prefix"] = record.pop("prefix")
     
-    source_title = "Data Source"
-    description = ""
-    
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and re.match(r'^[\U00010000-\U0010FFFF\u2600-\u27BF]', stripped):
-            source_title = stripped
-            desc_lines = []
-            for j in range(i + 1, len(lines)):
-                next_line = lines[j].strip()
-                if not next_line:
-                    continue
-                if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', next_line):
-                    break
-                desc_lines.append(next_line)
-            description = " ".join(desc_lines)
-            break
-    
-    return source_title, description
+    return records
+
+
+def parse_html_universal(html):
+    """
+    Main parser function - returns flat records array.
+    Kept for backward compatibility but returns records directly.
+    """
+    return extract_flat_records(html)
+
 
 # =========================
-# GET CURRENT PAGE NUMBER
-# =========================
-
-def get_current_page(text: str):
-    match = re.search(r'(\d+)/(\d+)', text)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return None, None
-
-# =========================
-# CHECK FOR NEXT BUTTON
-# =========================
-
-async def has_next_button(message) -> bool:
-    if not message.reply_markup:
-        return False
-    
-    try:
-        rows = message.reply_markup.rows
-        for row in rows:
-            for button in row.buttons:
-                if button.text == '➡' or button.text == '→' or 'next' in button.text.lower():
-                    return True
-    except:
-        pass
-    
-    return False
-
-# =========================
-# CLICK NEXT BUTTON WITH RETRY AND VERIFICATION
-# =========================
-
-async def click_next_button(message):
-    """Click next button with retry and verify page advanced"""
-    if not message.reply_markup:
-        print("No reply_markup on message")
-        return None
-    
-    # Get current page before click
-    old_page, total = get_current_page(message.message)
-    print(f"Current page before click: {old_page}/{total}")
-    
-    try:
-        rows = message.reply_markup.rows
-        
-        for row_idx, row in enumerate(rows):
-            for col_idx, button in enumerate(row.buttons):
-                button_text = button.text
-                
-                if button_text == '➡' or button_text == '→' or 'next' in button_text.lower():
-                    print(f"Clicking button: {button_text}")
-                    
-                    # Click the button
-                    await message.click(text=button_text)
-                    
-                    # Try multiple times to get updated message
-                    for attempt in range(5):  # 5 attempts, waiting longer each time
-                        wait_time = 2 + attempt  # 2, 3, 4, 5, 6 seconds
-                        print(f"  Waiting {wait_time}s (attempt {attempt+1}/5)...")
-                        await asyncio.sleep(wait_time)
-                        
-                        # Get updated message
-                        updated_message = await client.get_messages(
-                            BOT_USERNAME,
-                            ids=message.id
-                        )
-                        
-                        if updated_message:
-                            new_page, _ = get_current_page(updated_message.message)
-                            print(f"  New page after click: {new_page}/{total}")
-                            
-                            # If page advanced, return success
-                            if old_page and new_page and new_page > old_page:
-                                print(f"✓ Page advanced from {old_page} to {new_page}")
-                                return updated_message
-                            
-                            # If content changed but no page numbers, assume success
-                            if updated_message.message != message.message:
-                                print("✓ Content changed (no page numbers)")
-                                return updated_message
-                            
-                            # If page didn't advance but not last page, retry
-                            if total and old_page and old_page < total:
-                                print(f"  Page still {old_page}/{total}, retrying...")
-                            else:
-                                return updated_message
-                    
-                    # If we get here, page didn't advance after all retries
-                    print(f"⚠ Page did not advance after 5 retries")
-                    return await client.get_messages(BOT_USERNAME, ids=message.id)
-                    
-    except Exception as e:
-        print(f"Error clicking next button: {e}")
-    
-    return None
-
-# =========================
-# MAIN SEARCH
+# SEARCH FUNCTION
 # =========================
 
 @app.post("/search")
 async def search(data: Query):
+
     try:
-        print("\n========== NEW REQUEST ==========")
-        print("Query:", data.message)
-        
-        start_total = asyncio.get_event_loop().time()
-        
-        # Send initial query
-        sent = await client.send_message(
+
+        # SEND MESSAGE
+
+        await client.send_message(
             BOT_USERNAME,
             data.message
         )
-        
-        print("Message Sent, ID:", sent.id)
-        
-        # Wait for bot reply
-        target_message = None
-        
-        for i in range(30):
-            print(f"Checking Messages Attempt {i+1}")
-            await asyncio.sleep(2)
-            
-            messages = await client.get_messages(
-                BOT_USERNAME,
-                limit=15
-            )
-            
-            for msg in messages:
-                if msg.out:
-                    continue
-                if not msg.message:
-                    continue
-                if msg.id <= sent.id:
-                    continue
-                if msg.message.strip() == data.message.strip():
-                    continue
-                
-                target_message = msg
-                print("\nFOUND BOT REPLY")
-                print(msg.message[:200] + "...")
-                break
-            
-            if target_message:
-                break
-        
-        if not target_message:
+
+        # WAIT
+
+        await asyncio.sleep(3)
+
+        messages = await client.get_messages(
+            BOT_USERNAME,
+            limit=1
+        )
+
+        if not messages:
+
             return {
                 "status": False,
-                "error": "Bot reply timeout"
+                "error": "No response"
             }
-        
-        print(f"First reply in {asyncio.get_event_loop().time() - start_total:.2f}s")
-        
-        # Collect all records from all pages
-        all_records = []
-        current_message = target_message
-        page_num = 1
-        source_title = None
-        source_description = None
-        max_pages = 50
-        seen_pages = set()
-        
-        while current_message and page_num <= max_pages:
-            print(f"\n--- Processing Page {page_num} ---")
-            
-            # Extract source metadata from first page only
-            if source_title is None:
-                source_title, source_description = get_source_metadata(current_message.message)
-                print(f"Source Title: {source_title}")
-            
-            # Parse records from current page
-            page_records = parse_page_text(current_message.message)
-            print(f"Found {len(page_records)} records on page {page_num}")
-            all_records.extend(page_records)
-            
-            # Get current page number if available
-            current_page, total_pages = get_current_page(current_message.message)
-            if current_page:
-                print(f"Page {current_page}/{total_pages}")
-                
-                # Check if we've seen this page before
-                if current_page in seen_pages:
-                    print(f"Duplicate page {current_page} detected - stopping")
-                    break
-                seen_pages.add(current_page)
-            
-            # Stop if we've reached total pages
-            if total_pages and current_page and current_page >= total_pages:
-                print(f"Reached last page ({current_page}/{total_pages}). Done.")
+
+        reply = messages[0]
+
+        # CLICK BUTTON
+
+        try:
+
+            await reply.click(
+                text=DOWNLOAD_BUTTON
+            )
+
+        except Exception:
+
+            try:
+
+                await reply.click(0)
+
+            except Exception as e:
+
+                return {
+                    "status": False,
+                    "error": str(e)
+                }
+
+        # WAIT FILE
+
+        file_message = None
+
+        for _ in range(20):
+
+            await asyncio.sleep(1)
+
+            latest = await client.get_messages(
+                BOT_USERNAME,
+                limit=1
+            )
+
+            if (
+                latest
+                and latest[0].file
+            ):
+
+                file_message = latest[0]
+
                 break
-            
-            # Check for next button
-            has_next = await has_next_button(current_message)
-            
-            if not has_next:
-                print("No next page button found. Done.")
-                break
-            
-            # Click next button with retry
-            print("Clicking next page button...")
-            next_message = await click_next_button(current_message)
-            
-            if not next_message:
-                print("Failed to get next page. Stopping.")
-                break
-            
-            # Check if content changed
-            if next_message.message == current_message.message:
-                print("Message content didn't change after clicking. Stopping.")
-                break
-            
-            # Check if page went backwards (loop protection)
-            new_page, _ = get_current_page(next_message.message)
-            if new_page and current_page and new_page <= current_page:
-                print(f"Page didn't advance ({current_page} -> {new_page}), checking if last page...")
-                if total_pages and current_page >= total_pages:
-                    print(f"Already on last page ({current_page}/{total_pages}). Done.")
-                    break
-                else:
-                    print("Stopping to prevent loop.")
-                    break
-            
-            current_message = next_message
-            page_num += 1
-            
-            # Small delay to be respectful
-            await asyncio.sleep(0.5)
-        
-        total_time = asyncio.get_event_loop().time() - start_total
-        print(f"\n=== TOTAL: {len(all_records)} records collected from {page_num} pages in {total_time:.2f}s ===")
-        
-        # Build final response
-        result = {
-            "source1": {
-                "title": source_title or "Data Source",
-                "description": source_description or "",
-                "records": all_records
+
+        if not file_message:
+
+            return {
+                "status": False,
+                "error": "No file"
             }
-        }
-        
-        return {
+
+        # DOWNLOAD FILE
+
+        file_path = await client.download_media(
+            file_message,
+            file=DOWNLOAD_DIR
+        )
+
+        file_name = os.path.basename(
+            file_path
+        )
+
+        response = {
             "status": True,
             "query": data.message,
-            "data": result,
-            "meta": {
-                "pages_scraped": page_num,
-                "total_records": len(all_records),
-                "time_seconds": round(total_time, 2)
-            }
+            "file_name": file_name,
+            "size": os.path.getsize(
+                file_path
+            )
         }
-        
+
+        # PARSE HTML - NOW RETURNS FLAT RECORDS ARRAY
+
+        if file_name.endswith(".html"):
+
+            with open(
+                file_path,
+                "r",
+                encoding="utf-8",
+                errors="ignore"
+            ) as f:
+
+                html_content = f.read()
+
+            parsed = parse_html_universal(
+                html_content
+            )
+
+            response["parsed"] = parsed
+            response["record_count"] = len(parsed)
+
+        return response
+
     except Exception as e:
-        print("\nERROR:")
-        print(str(e))
-        import traceback
-        traceback.print_exc()
+
         return {
             "status": False,
             "error": str(e)
         }
 
 # =========================
-# TEST ENDPOINT
+# BROWSER SEARCH
 # =========================
 
 @app.get("/test")
 async def test(q: str):
-    return await search(Query(message=q))
 
-# =========================
-# ROOT
-# =========================
-
-@app.get("/")
-async def root():
-    return {
-        "status": True,
-        "message": "Multi-Page Telegram Bot Scraper API Running",
-        "features": [
-            "Automatic pagination detection",
-            "Auto-click next page button with retry (5 attempts)",
-            "Waits up to 6 seconds for page to change",
-            "Verifies page number actually increased",
-            "Prevents loops with duplicate page detection"
-        ]
-    }
-
-# =========================
-# RUN
-# =========================
-
-# uvicorn main:app --host 0.0.0.0 --port $PORT
+    return await search(
+        Query(message=q)
+    )
