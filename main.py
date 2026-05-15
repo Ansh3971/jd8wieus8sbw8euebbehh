@@ -58,82 +58,81 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING (HELPER)
+# FIELD MAPPING HELPERS
 # =========================
 
-def add_field_to_record(record: Dict, field_tag: str, value: str):
-    """Add field to record with proper mapping."""
-    json_key = None
-
+def get_json_key(field_tag: str) -> str:
+    """Map emoji field names to JSON keys."""
+    field_tag = field_tag.strip()
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
-        json_key = "phones"
-    elif "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
-        json_key = "addresses"
-    elif "📩Email" in field_tag or "📩E-mail" in field_tag:
-        json_key = "emails"
-    elif "🃏Document number" in field_tag or "🃏Document No" in field_tag:
-        json_key = "document_number"
-    elif "👤Full name" in field_tag or "👤Name" in field_tag:
-        json_key = "full_name"
-    elif "👨The name of the father" in field_tag or "👨Father name" in field_tag:
-        json_key = "father_name"
-    elif "🗺️Region" in field_tag or "🗺️Location" in field_tag:
-        json_key = "region"
-    elif "👤Nick" in field_tag or "👤Nickname" in field_tag:
-        json_key = "nick"
-    elif "📖Passport number" in field_tag:
-        json_key = "passport_number"
-    elif "🔐Encrypted password" in field_tag:
-        json_key = "encrypted_password"
-    elif "🔑Password" in field_tag:
-        json_key = "password"
-    elif "📆Date" in field_tag or "📆The date of registration" in field_tag:
-        json_key = "registration_date"
-    elif "📆Last activity" in field_tag:
-        json_key = "last_activity"
-    elif "🎂Date of birth" in field_tag:
-        json_key = "dob"
-    elif "🌃City" in field_tag:
-        json_key = "city"
-    elif "🇺🇸Stat" in field_tag:
-        json_key = "state"
-    elif "🏤Postal code" in field_tag:
-        json_key = "postal_code"
-    elif "🎯IP" in field_tag:
-        json_key = "ip"
-    elif "🚻Gender" in field_tag:
-        json_key = "gender"
-    elif "👴Age" in field_tag:
-        json_key = "age"
-    elif "📍District" in field_tag:
-        json_key = "district"
-    elif "🔗Link" in field_tag:
-        json_key = "link"
-    elif "🏷️ login" in field_tag:
-        json_key = "login"
-    elif "📰Category" in field_tag:
-        json_key = "category"
-    elif "🗾Country" in field_tag:
-        json_key = "country"
-    elif "⬆Level" in field_tag:
-        json_key = "level"
-    elif "🏫Education" in field_tag:
-        json_key = "education"
-    elif "👤Surname" in field_tag:
-        json_key = "surname"
+        return "phones"
+    if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
+        return "addresses"
+    if "📩Email" in field_tag or "📩E-mail" in field_tag:
+        return "emails"
+    if "🃏Document number" in field_tag or "🃏Document No" in field_tag:
+        return "document_number"
+    if "👤Full name" in field_tag or "👤Name" in field_tag:
+        return "full_name"
+    if "👨The name of the father" in field_tag or "👨Father name" in field_tag:
+        return "father_name"
+    if "🗺️Region" in field_tag or "🗺️Location" in field_tag:
+        return "region"
+    if "👤Nick" in field_tag or "👤Nickname" in field_tag:
+        return "nick"
+    if "📖Passport number" in field_tag:
+        return "passport_number"
+    if "🔐Encrypted password" in field_tag:
+        return "encrypted_password"
+    if "🔑Password" in field_tag:
+        return "password"
+    if "📆Date" in field_tag or "📆The date of registration" in field_tag:
+        return "registration_date"
+    if "📆Last activity" in field_tag:
+        return "last_activity"
+    if "🎂Date of birth" in field_tag:
+        return "dob"
+    if "🌃City" in field_tag:
+        return "city"
+    if "🇺🇸Stat" in field_tag:
+        return "state"
+    if "🏤Postal code" in field_tag:
+        return "postal_code"
+    if "🎯IP" in field_tag:
+        return "ip"
+    if "🚻Gender" in field_tag:
+        return "gender"
+    if "👴Age" in field_tag:
+        return "age"
+    if "📍District" in field_tag:
+        return "district"
+    if "🔗Link" in field_tag:
+        return "link"
+    if "🏷️ login" in field_tag:
+        return "login"
+    if "📰Category" in field_tag:
+        return "category"
+    if "🗾Country" in field_tag:
+        return "country"
+    if "⬆Level" in field_tag:
+        return "level"
+    if "🏫Education" in field_tag:
+        return "education"
+    if "👤Surname" in field_tag:
+        return "surname"
+    return None
 
-    if json_key:
-        if json_key in ["phones", "addresses", "emails"]:
-            if json_key not in record:
-                record[json_key] = []
-            if value not in record[json_key]:
-                record[json_key].append(value)
-        else:
-            if json_key not in record:
-                record[json_key] = value
+def add_to_record(record: Dict, key: str, value: str):
+    if key in ["phones", "addresses", "emails"]:
+        record.setdefault(key, [])
+        if value not in record[key]:
+            record[key].append(value)
+    else:
+        if key not in record:
+            record[key] = value
 
 # =========================
-# MAIN PARSER – CORRECT RECORD SPLITTING
+# PARSER USING BEAUTIFULSOUP (NO REGEX FOR FIELDS)
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
@@ -142,7 +141,7 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
-        # Get source title
+        # Source title
         source = "Unknown"
         title_elem = block.find("div", class_="block-title")
         if title_elem:
@@ -152,47 +151,57 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
 
-        # Get raw HTML of block-text
+        # Get raw HTML of the block-text
         html_text = str(text_elem)
 
-        # Split by double <br> tags (with optional attributes, spaces, etc.)
-        # This regex matches: <br (optional spaces and attributes) > optional whitespace <br ... >
+        # Split records by double <br> tags
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-
-            # Skip the initial description (no bold tags or field emojis)
-            if '<b>' not in part and '📞' not in part and '🏘️' not in part and '📩' not in part:
+            # Skip description text (long with no bold tags)
+            if '<b>' not in part:
                 continue
 
-            # Also skip if it's just a short leftover (like a stray <br>)
-            if len(part) < 20 and ':' not in part:
-                continue
-
+            # Parse the part with BeautifulSoup to extract fields reliably
+            soup_part = BeautifulSoup(part, "html.parser")
             record = {"source": source}
 
-            # Extract fields with <code> value
-            pattern_code = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
-            for field_tag, value in pattern_code.findall(part):
-                field_tag = field_tag.strip()
-                value = value.strip()
+            # Find all <b> tags that contain field emojis
+            for bold in soup_part.find_all("b"):
+                field_tag = bold.get_text(strip=True)
+                json_key = get_json_key(field_tag)
+                if not json_key:
+                    continue
+
+                # Get value: either from a following <code> tag or plain text
+                value = None
+                code_tag = bold.find_next_sibling("code")
+                if code_tag:
+                    value = code_tag.get_text(strip=True)
+                else:
+                    # Get the text after the bold tag until the next <br> or end of part
+                    next_sibling = bold.next_sibling
+                    if next_sibling and isinstance(next_sibling, str):
+                        # text after bold, maybe with leading spaces
+                        value = next_sibling.strip()
+                        # Stop at first <br> if any
+                        br_pos = value.find('<br')
+                        if br_pos != -1:
+                            value = value[:br_pos].strip()
+                    elif next_sibling and hasattr(next_sibling, 'name') and next_sibling.name == 'code':
+                        # already handled above, but just in case
+                        value = next_sibling.get_text(strip=True)
+
                 if value:
-                    add_field_to_record(record, field_tag, value)
+                    add_to_record(record, json_key, value)
 
-            # Extract fields without <code> (plain text after bold)
-            pattern_text = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
-            for field_tag, value in pattern_text.findall(part):
-                field_tag = field_tag.strip()
-                value = value.strip()
-                if value and len(value) > 1 and value not in [":", "-", " "]:
-                    add_field_to_record(record, field_tag, value)
+            # Also handle fields that might be in plain text without <b>? Not needed.
 
-            # Only add record if it has more than just source
             if len(record) > 1:
-                # Convert single‑item arrays to simple values
+                # Convert single-item arrays to simple values
                 for key in ["phones", "addresses", "emails"]:
                     if key in record and isinstance(record[key], list) and len(record[key]) == 1:
                         record[key] = record[key][0]
