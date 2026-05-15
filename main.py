@@ -58,7 +58,7 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING (DEFINED FIRST)
+# FIELD MAPPING
 # =========================
 
 FIELD_MAPPING = {
@@ -198,7 +198,7 @@ def add_field_to_record(record: Dict, field_tag: str, value: str):
                 record[json_key] = value
 
 # =========================
-# MAIN PARSER
+# MAIN PARSER - CORRECT RECORD SPLITTING
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
@@ -218,21 +218,29 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
         
-        # Method 1: Split by double <br> tags in raw HTML
+        # Get raw HTML string of the block text
         html_text = str(text_elem)
+        
+        # Split by double <br> tags (with optional spaces and slashes)
+        # This separates individual records within the block
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
         
         for part in parts:
             part = part.strip()
-            if not part or '<b>' not in part:
+            if not part:
                 continue
-            # Skip description (long text with no field markers)
-            if len(part) > 300 and '📞' not in part and '🏘️' not in part and '📩' not in part:
+            
+            # Skip the initial description (long text without field markers)
+            if len(part) > 200 and '📞' not in part and '🏘️' not in part and '📩' not in part:
+                continue
+            
+            # Skip parts that don't contain any bold tags (no fields)
+            if '<b>' not in part:
                 continue
             
             record = {"source": source}
             
-            # Extract fields with code tags
+            # Extract fields with <code> value
             pattern_code = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
             for field_tag, value in pattern_code.findall(part):
                 field_tag = field_tag.strip()
@@ -240,16 +248,17 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                 if value:
                     add_field_to_record(record, field_tag, value)
             
-            # Extract fields without code tags (plain text after bold)
+            # Extract fields without <code> (plain text after bold)
             pattern_text = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
             for field_tag, value in pattern_text.findall(part):
                 field_tag = field_tag.strip()
                 value = value.strip()
-                if value and len(value) > 1 and value not in [":", "-"]:
+                if value and len(value) > 1 and value not in [":", "-", " ", ""]:
                     add_field_to_record(record, field_tag, value)
             
+            # Only add if record has more than just source
             if len(record) > 1:
-                # Clean up single-item arrays
+                # Convert single-item arrays to simple values
                 for key in ["phones", "addresses", "emails"]:
                     if key in record and isinstance(record[key], list) and len(record[key]) == 1:
                         record[key] = record[key][0]
