@@ -133,7 +133,7 @@ def add_field_to_record(record: Dict, field_tag: str, value: str):
                 record[json_key] = value
 
 # =========================
-# MAIN PARSER - SPLIT BY <br><br>
+# MAIN PARSER - LINE BY LINE WITH STATE
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
@@ -152,46 +152,105 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
         
-        # Get raw HTML inside block-text
-        html_text = str(text_elem)
+        # Get plain text lines to preserve order
+        lines = text_elem.get_text(separator="\n", strip=True).split("\n")
         
-        # Split by double <br> tags – each part is one record
-        parts = re.split(r'<br>\s*<br>', html_text)
+        current_record = None
+        # We will accumulate fields and decide when to finalize a record
+        # A new record starts when we see a field that typically starts a person's data
+        # and the current record already has a name or father or document number.
+        # We'll keep a temporary dict for the current record.
+        temp_record = {}
         
-        for part in parts:
-            part = part.strip()
-            if not part or '<b>' not in part:
+        for line in lines:
+            line = line.strip()
+            if not line:
                 continue
             
-            # Skip the initial description paragraph (long text without field markers)
-            if len(part) > 200 and '📞' not in part and '🏘️' not in part and '📩' not in part:
+            # Skip the description paragraph (long text without colons or field indicators)
+            if len(line) > 200 and ':' not in line and not any(emoji in line for emoji in ['📞', '🏘️', '📩', '🃏', '👤', '👨', '🗺️']):
                 continue
             
-            record = {"source": source}
+            # Try to extract field and value
+            field_tag = None
+            value = None
             
-            # Extract fields with <code> value
-            pattern_code = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
-            for field_tag, value in pattern_code.findall(part):
-                field_tag = field_tag.strip()
-                value = value.strip()
-                if value:
-                    add_field_to_record(record, field_tag, value)
+            # Pattern 1: bold tags with code (but in plain text, we have to parse from the line as it appears in text)
+            # Since we have plain text, we look for known emoji prefixes
+            for emoji in FIELD_MAPPING:
+                if line.startswith(emoji):
+                    # Split at first colon
+                    if ':' in line:
+                        parts = line.split(':', 1)
+                        field_tag = parts[0].strip()
+                        value = parts[1].strip()
+                    else:
+                        field_tag = emoji
+                        value = line[len(emoji):].strip()
+                    break
             
-            # Extract fields without <code> (plain text after bold)
-            pattern_text = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
-            for field_tag, value in pattern_text.findall(part):
-                field_tag = field_tag.strip()
-                value = value.strip()
-                if value and len(value) > 1 and value not in [":", "-"]:
-                    add_field_to_record(record, field_tag, value)
+            if field_tag and value:
+                # Add to temp_record
+                add_field_to_record(temp_record, field_tag, value)
+                
+                # Check if this record is complete (has name/father/document)
+                # If complete and we see another field that typically starts a new record (like a new phone), we finalize
+                # But simpler: After adding, if the record has a name or father or document, and the next line starts a new record, we finalize.
+                # We'll finalize later when we detect a new record start.
+            else:
+                # Possibly multi-line address continuation? We'll ignore.
+                pass
             
-            # Only add if record has more than just source
-            if len(record) > 1:
-                # Convert single-item arrays to simple values
-                for key in ["phones", "addresses", "emails"]:
-                    if key in record and isinstance(record[key], list) and len(record[key]) == 1:
-                        record[key] = record[key][0]
-                all_records.append(record)
+            # Check if we should finalize the current record: when we encounter a line that starts a new record
+            # and current record already has fields. A new record start is indicated by a line that starts with a phone, email, or address,
+            # but only if the current record already has some fields (to avoid finalizing empty record).
+            # However, without looking ahead, we can finalize at the end of the block.
+        
+        # At the end of the block, finalize the last record
+        if temp_record and len(temp_record) > 1:
+            # Clean up single-item arrays
+            for key in ["phones", "addresses", "emails"]:
+                if key in temp_record and isinstance(temp_record[key], list) and len(temp_record[key]) == 1:
+                    temp_record[key] = temp_record[key][0]
+            temp_record["source"] = source
+            all_records.append(temp_record)
+    
+    # If the above didn't work (no records), fall back to splitting by double br
+    if not all_records:
+        # Fallback method: split by <br><br> in raw HTML
+        for block in blocks:
+            source = "Unknown"
+            title_elem = block.find("div", class_="block-title")
+            if title_elem:
+                source = title_elem.get_text(strip=True)
+            
+            text_elem = block.find("div", class_="block-text")
+            if not text_elem:
+                continue
+            
+            html_text = str(text_elem)
+            # Split by double br (with optional spaces and slashes)
+            parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
+            
+            for part in parts:
+                part = part.strip()
+                if not part or '<b>' not in part:
+                    continue
+                if len(part) < 50 and ':' not in part:
+                    continue
+                record = {"source": source}
+                # Extract fields from this part
+                pattern_code = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
+                for field_tag, value in pattern_code.findall(part):
+                    add_field_to_record(record, field_tag.strip(), value.strip())
+                pattern_text = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
+                for field_tag, value in pattern_text.findall(part):
+                    add_field_to_record(record, field_tag.strip(), value.strip())
+                if len(record) > 1:
+                    for key in ["phones", "addresses", "emails"]:
+                        if key in record and isinstance(record[key], list) and len(record[key]) == 1:
+                            record[key] = record[key][0]
+                    all_records.append(record)
     
     return all_records
 
@@ -210,7 +269,6 @@ async def search(data: dict):
         sent = await client.send_message(BOT_USERNAME, message)
         await asyncio.sleep(3)
         
-        # Find bot reply
         messages = await client.get_messages(BOT_USERNAME, limit=10)
         reply = None
         for msg in messages:
@@ -222,7 +280,6 @@ async def search(data: dict):
         
         file_path = None
         
-        # Try to click download button
         if reply.buttons:
             for row in reply.buttons:
                 for btn in row:
@@ -231,7 +288,6 @@ async def search(data: dict):
                         break
                 if file_path:
                     break
-            # Wait for file
             for _ in range(30):
                 await asyncio.sleep(2)
                 latest = await client.get_messages(BOT_USERNAME, limit=5)
@@ -242,7 +298,6 @@ async def search(data: dict):
                 if file_path:
                     break
         
-        # Fallback: extract HTML from message text
         if not file_path and reply.message:
             html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', reply.message, re.DOTALL | re.IGNORECASE)
             if html_match:
