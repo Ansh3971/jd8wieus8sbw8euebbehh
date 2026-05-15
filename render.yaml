@@ -1,9 +1,17 @@
 services:
   - type: web
-    name: telegram-download-api
+    name: telegram-html-scraper
     runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    buildCommand: |
+      curl -fsSL https://pyenv.run | bash
+      export PATH="$HOME/.pyenv/bin:$PATH"
+      eval "$(pyenv init -)"
+      pyenv install 3.11.8 -s
+      pyenv global 3.11.8
+      python --version
+      pip install --upgrade pip setuptools wheel
+      pip install --no-cache-dir -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11
+        value: 3.11.8
