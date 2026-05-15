@@ -58,11 +58,10 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING HELPERS
+# HELPER: Map field tag to JSON key
 # =========================
 
 def get_json_key(field_tag: str) -> str:
-    """Map emoji field names to JSON keys."""
     field_tag = field_tag.strip()
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
         return "phones"
@@ -122,7 +121,14 @@ def get_json_key(field_tag: str) -> str:
         return "surname"
     return None
 
+# =========================
+# ADD FIELD TO RECORD
+# =========================
+
 def add_to_record(record: Dict, key: str, value: str):
+    # Skip numeric values for address fields to avoid document numbers
+    if key == "addresses" and value.replace(" ", "").isdigit():
+        return
     if key in ["phones", "addresses", "emails"]:
         record.setdefault(key, [])
         if value not in record[key]:
@@ -132,7 +138,7 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# PARSER USING BEAUTIFULSOUP (NO REGEX FOR FIELDS)
+# MAIN PARSER – ROBUST RECORD SPLITTING
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
@@ -151,57 +157,58 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
 
-        # Get raw HTML of the block-text
         html_text = str(text_elem)
 
-        # Split records by double <br> tags
+        # Split by double <br> tags (any attributes, self‑closing, spaces)
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-            # Skip description text (long with no bold tags)
+
+            # Skip the initial description (no bold tags)
             if '<b>' not in part:
                 continue
 
-            # Parse the part with BeautifulSoup to extract fields reliably
+            # Parse this part with BeautifulSoup
             soup_part = BeautifulSoup(part, "html.parser")
             record = {"source": source}
 
-            # Find all <b> tags that contain field emojis
+            # Find all <b> tags that are field labels
             for bold in soup_part.find_all("b"):
                 field_tag = bold.get_text(strip=True)
                 json_key = get_json_key(field_tag)
                 if not json_key:
                     continue
 
-                # Get value: either from a following <code> tag or plain text
                 value = None
+                # First, look for a following <code> tag
                 code_tag = bold.find_next_sibling("code")
                 if code_tag:
                     value = code_tag.get_text(strip=True)
                 else:
-                    # Get the text after the bold tag until the next <br> or end of part
+                    # Otherwise, get the next text node after the <b>
                     next_sibling = bold.next_sibling
                     if next_sibling and isinstance(next_sibling, str):
-                        # text after bold, maybe with leading spaces
-                        value = next_sibling.strip()
-                        # Stop at first <br> if any
-                        br_pos = value.find('<br')
+                        # Take text until the next <br> or <b>
+                        raw_text = next_sibling.strip()
+                        # Stop at first <br> if present
+                        br_pos = raw_text.find('<br')
                         if br_pos != -1:
-                            value = value[:br_pos].strip()
-                    elif next_sibling and hasattr(next_sibling, 'name') and next_sibling.name == 'code':
-                        # already handled above, but just in case
-                        value = next_sibling.get_text(strip=True)
+                            raw_text = raw_text[:br_pos]
+                        value = raw_text.strip()
+                        # If empty, try the next sibling after a possible code that wasn't caught
+                        if not value and next_sibling.next_sibling:
+                            nxt = next_sibling.next_sibling
+                            if nxt and isinstance(nxt, str):
+                                value = nxt.strip()
 
                 if value:
                     add_to_record(record, json_key, value)
 
-            # Also handle fields that might be in plain text without <b>? Not needed.
-
             if len(record) > 1:
-                # Convert single-item arrays to simple values
+                # Convert single-item lists to simple values
                 for key in ["phones", "addresses", "emails"]:
                     if key in record and isinstance(record[key], list) and len(record[key]) == 1:
                         record[key] = record[key][0]
