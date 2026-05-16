@@ -58,17 +58,17 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# HELPER: Map field tag to JSON key
+# FIELD MAPPING
 # =========================
 
 def get_json_key(field_tag: str) -> str:
     field_tag = field_tag.strip()
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
-        return "phones"
+        return "phone"
     if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
-        return "addresses"
+        return "address"
     if "📩Email" in field_tag or "📩E-mail" in field_tag:
-        return "emails"
+        return "email"
     if "🃏Document number" in field_tag or "🃏Document No" in field_tag:
         return "document_number"
     if "👤Full name" in field_tag or "👤Name" in field_tag:
@@ -121,15 +121,14 @@ def get_json_key(field_tag: str) -> str:
         return "surname"
     return None
 
-# =========================
-# ADD FIELD TO RECORD
-# =========================
-
 def add_to_record(record: Dict, key: str, value: str):
-    # Skip numeric values for address fields to avoid document numbers
-    if key == "addresses" and value.replace(" ", "").isdigit():
+    if key == "address" and value.replace(" ", "").isdigit():
         return
-    if key in ["phones", "addresses", "emails"]:
+    # For phone, email - store as simple value, not list
+    if key in ["phone", "email"]:
+        if key not in record:
+            record[key] = value
+    elif key in ["phones", "addresses", "emails"]:
         record.setdefault(key, [])
         if value not in record[key]:
             record[key].append(value)
@@ -138,20 +137,33 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# MAIN PARSER – ROBUST RECORD SPLITTING
+# MAIN PARSER
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
+    current_source = None
+    records_in_current_source = []
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
-        # Source title
+        # Get source title
         source = "Unknown"
         title_elem = block.find("div", class_="block-title")
         if title_elem:
             source = title_elem.get_text(strip=True)
+
+        # If source changed, save previous source's records and start new
+        if current_source is not None and source != current_source:
+            if records_in_current_source:
+                all_records.append({
+                    "source": current_source,
+                    "records": records_in_current_source
+                })
+            records_in_current_source = []
+        
+        current_source = source
 
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
@@ -159,23 +171,17 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
 
         html_text = str(text_elem)
 
-        # Split by double <br> tags (any attributes, self‑closing, spaces)
+        # Split by double <br> tags
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
         for part in parts:
             part = part.strip()
-            if not part:
+            if not part or '<b>' not in part:
                 continue
 
-            # Skip the initial description (no bold tags)
-            if '<b>' not in part:
-                continue
-
-            # Parse this part with BeautifulSoup
             soup_part = BeautifulSoup(part, "html.parser")
-            record = {"source": source}
+            record = {}
 
-            # Find all <b> tags that are field labels
             for bold in soup_part.find_all("b"):
                 field_tag = bold.get_text(strip=True)
                 json_key = get_json_key(field_tag)
@@ -183,38 +189,174 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                     continue
 
                 value = None
-                # First, look for a following <code> tag
                 code_tag = bold.find_next_sibling("code")
                 if code_tag:
                     value = code_tag.get_text(strip=True)
                 else:
-                    # Otherwise, get the next text node after the <b>
                     next_sibling = bold.next_sibling
                     if next_sibling and isinstance(next_sibling, str):
-                        # Take text until the next <br> or <b>
                         raw_text = next_sibling.strip()
-                        # Stop at first <br> if present
                         br_pos = raw_text.find('<br')
                         if br_pos != -1:
                             raw_text = raw_text[:br_pos]
                         value = raw_text.strip()
-                        # If empty, try the next sibling after a possible code that wasn't caught
-                        if not value and next_sibling.next_sibling:
-                            nxt = next_sibling.next_sibling
-                            if nxt and isinstance(nxt, str):
-                                value = nxt.strip()
 
                 if value:
                     add_to_record(record, json_key, value)
 
-            if len(record) > 1:
-                # Convert single-item lists to simple values
-                for key in ["phones", "addresses", "emails"]:
-                    if key in record and isinstance(record[key], list) and len(record[key]) == 1:
-                        record[key] = record[key][0]
-                all_records.append(record)
+            if record:
+                records_in_current_source.append(record)
+
+    # Add last source's records
+    if current_source is not None and records_in_current_source:
+        all_records.append({
+            "source": current_source,
+            "records": records_in_current_source
+        })
 
     return all_records
+
+# =========================
+# FORMAT OUTPUT AS TEXT
+# =========================
+
+def format_records_as_text(records_data: List[Dict]) -> str:
+    """Convert records to clean text format with minimal spacing"""
+    lines = []
+    
+    for source_data in records_data:
+        source = source_data["source"]
+        records = source_data["records"]
+        
+        lines.append(f"\n📁 {source}\n")
+        
+        for idx, record in enumerate(records):
+            # Phone
+            if "phone" in record:
+                lines.append(f"📞 {record['phone']}")
+            
+            # Multiple phones (if any)
+            if "phones" in record:
+                for phone in record["phones"]:
+                    lines.append(f"📞 {phone}")
+            
+            # Email
+            if "email" in record:
+                lines.append(f"📧 {record['email']}")
+            
+            if "emails" in record:
+                for email in record["emails"]:
+                    lines.append(f"📧 {email}")
+            
+            # Address
+            if "address" in record:
+                lines.append(f"📍 {record['address']}")
+            
+            if "addresses" in record:
+                for addr in record["addresses"]:
+                    lines.append(f"📍 {addr}")
+            
+            # Full name
+            if "full_name" in record:
+                lines.append(f"👤 {record['full_name']}")
+            
+            # Father name
+            if "father_name" in record:
+                lines.append(f"👨 {record['father_name']}")
+            
+            # Document number
+            if "document_number" in record:
+                lines.append(f"🆔 {record['document_number']}")
+            
+            # Passport number
+            if "passport_number" in record:
+                lines.append(f"🛂 {record['passport_number']}")
+            
+            # Nick
+            if "nick" in record:
+                lines.append(f"🏷️ {record['nick']}")
+            
+            # Region
+            if "region" in record:
+                lines.append(f"🌍 {record['region']}")
+            
+            # Password
+            if "password" in record:
+                lines.append(f"🔑 {record['password']}")
+            
+            if "encrypted_password" in record:
+                lines.append(f"🔐 {record['encrypted_password']}")
+            
+            # Date fields
+            if "registration_date" in record:
+                lines.append(f"📅 {record['registration_date']}")
+            
+            if "last_activity" in record:
+                lines.append(f"⏰ {record['last_activity']}")
+            
+            if "dob" in record:
+                lines.append(f"🎂 {record['dob']}")
+            
+            # Location
+            if "city" in record:
+                lines.append(f"🏙️ {record['city']}")
+            
+            if "state" in record:
+                lines.append(f"🗺️ {record['state']}")
+            
+            if "postal_code" in record:
+                lines.append(f"📮 {record['postal_code']}")
+            
+            # IP
+            if "ip" in record:
+                lines.append(f"💻 {record['ip']}")
+            
+            # Gender/Age/District
+            if "gender" in record:
+                lines.append(f"⚥ {record['gender']}")
+            
+            if "age" in record:
+                lines.append(f"📊 {record['age']}")
+            
+            if "district" in record:
+                lines.append(f"📍 {record['district']}")
+            
+            # Link
+            if "link" in record:
+                lines.append(f"🔗 {record['link']}")
+            
+            # Login
+            if "login" in record:
+                lines.append(f"🔑 {record['login']}")
+            
+            # Category
+            if "category" in record:
+                lines.append(f"📂 {record['category']}")
+            
+            # Country
+            if "country" in record:
+                lines.append(f"🌐 {record['country']}")
+            
+            # Level
+            if "level" in record:
+                lines.append(f"📈 {record['level']}")
+            
+            # Education
+            if "education" in record:
+                lines.append(f"🎓 {record['education']}")
+            
+            # Surname
+            if "surname" in record:
+                lines.append(f"📝 {record['surname']}")
+            
+            # Add separator between records (except last)
+            if idx < len(records) - 1:
+                lines.append("")
+        
+        # Add blank line between different sources
+        lines.append("")
+    
+    return "\n".join(lines)
 
 # =========================
 # API ENDPOINTS
@@ -272,14 +414,18 @@ async def search(data: dict):
         if file_path and os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 html_content = f.read()
-            records = parse_leakbase_html(html_content)
+            records_data = parse_leakbase_html(html_content)
             if "temp_" in file_path:
                 os.remove(file_path)
+            
+            # Also return JSON format for flexibility
             return {
                 "status": True,
                 "query": message,
-                "record_count": len(records),
-                "data": records
+                "record_count": sum(len(s["records"]) for s in records_data),
+                "source_count": len(records_data),
+                "text_output": format_records_as_text(records_data),
+                "data": records_data
             }
 
         return {"status": False, "error": "No file received"}
@@ -299,11 +445,22 @@ async def home():
     return """
     <!DOCTYPE html>
     <html>
-        <head><title>Telegram LeakBase Parser API</title></head>
-        <body style="font-family: Arial; padding: 40px;">
+        <head>
+            <title>Telegram LeakBase Parser API</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 40px; max-width: 900px; margin: 0 auto; }
+                h2 { color: #333; }
+                input { width: 70%; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
+                button { padding: 12px 24px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+                button:hover { background: #0056b3; }
+                pre { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-family: monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word; }
+                .result { margin-top: 20px; }
+            </style>
+        </head>
+        <body>
             <h2>🔍 Telegram LeakBase Parser API</h2>
             <form action="/test" method="get">
-                <input type="text" name="q" placeholder="Enter query" style="width:300px; padding:10px;">
+                <input type="text" name="q" placeholder="Enter query (phone, email, or name)" style="width: 70%;">
                 <button type="submit">Search</button>
             </form>
         </body>
