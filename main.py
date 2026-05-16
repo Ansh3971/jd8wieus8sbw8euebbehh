@@ -59,14 +59,14 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# UNIVERSAL PARSER - WORKS ON ALL STRUCTURES
+# CLEAN FIELD NAME
 # =========================
 
 def clean_field_name(field_raw: str) -> str:
     """Clean field name by removing emojis and special characters"""
     # Remove emojis
     field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_raw)
-    # Remove any remaining non-alphanumeric except spaces and underscores
+    # Remove any remaining non-alphanumeric except spaces
     field_clean = re.sub(r'[^\w\s]', '', field_clean)
     # Replace spaces with underscores and convert to lowercase
     field_clean = field_clean.strip().lower().replace(" ", "_")
@@ -74,56 +74,9 @@ def clean_field_name(field_raw: str) -> str:
     field_clean = re.sub(r'_+', '_', field_clean)
     return field_clean
 
-
-def extract_value_from_bold(bold, part_html: str) -> str:
-    """Extract value from a bold tag using multiple methods"""
-    value = None
-    
-    # Method 1: Check for <code> tag as next sibling
-    code_tag = bold.find_next_sibling("code")
-    if code_tag:
-        value = code_tag.get_text(strip=True)
-    
-    # Method 2: Check for text node as next sibling
-    if not value:
-        next_sib = bold.next_sibling
-        if next_sib and isinstance(next_sib, str):
-            value = next_sib.strip()
-            # Remove any HTML tags that might be in the text
-            if '<' in value:
-                value = re.sub(r'<[^>]+>', '', value).strip()
-    
-    # Method 3: Use regex on the part HTML
-    if not value:
-        bold_text = bold.get_text(strip=True)
-        # Escape special regex characters in bold_text
-        escaped_bold = re.escape(bold_text)
-        # Pattern: <b>bold_text</b> <code>VALUE</code>
-        pattern1 = re.compile(rf'<b>{escaped_bold}</b>\s*<code>(.*?)</code>', re.DOTALL)
-        match1 = pattern1.search(part_html)
-        if match1:
-            value = match1.group(1).strip()
-        
-        # Pattern: <b>bold_text</b> VALUE (until next <br> or <b>)
-        if not value:
-            pattern2 = re.compile(rf'<b>{escaped_bold}</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
-            match2 = pattern2.search(part_html)
-            if match2:
-                value = match2.group(1).strip()
-                # Remove any remaining HTML tags
-                value = re.sub(r'<[^>]+>', '', value).strip()
-    
-    # Clean the value
-    if value:
-        # Remove any HTML entities
-        value = re.sub(r'&[a-z]+;', '', value)
-        # Remove any remaining HTML tags
-        value = re.sub(r'<[^>]+>', '', value)
-        # Strip whitespace
-        value = value.strip()
-    
-    return value
-
+# =========================
+# UNIVERSAL PARSER - FIXED
+# =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     """
@@ -154,54 +107,81 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
             if not part:
                 continue
             
-            # Skip the description text (no bold tags or too long)
+            # Skip the description text (no bold tags)
             if '<b>' not in part:
                 continue
             
-            # Skip if it's just the description (more than 200 chars and no emoji fields)
+            # Skip if it's just the description
             if len(part) > 300 and '📞' not in part and '📩' not in part and '🔑' not in part and '🔐' not in part:
                 continue
             
-            # Parse this part with BeautifulSoup
-            part_soup = BeautifulSoup(part, "html.parser")
             record_data = {}
             
-            # Find all bold tags which represent field names
-            bold_tags = part_soup.find_all("b")
+            # Use regex to find all field-value pairs in order
+            # Pattern 1: <b>FIELD</b> <code>VALUE</code>
+            pattern1 = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
+            matches1 = pattern1.findall(part)
             
-            for bold in bold_tags:
-                field_raw = bold.get_text(strip=True)
-                if not field_raw:
-                    continue
-                
-                # Clean the field name
+            for field_raw, value in matches1:
                 field_clean = clean_field_name(field_raw)
-                if not field_clean:
-                    continue
-                
-                # Extract the value
-                value = extract_value_from_bold(bold, part)
-                
-                if value:
-                    # Handle multiple values (like multiple passwords, phones, etc.)
-                    if field_clean in record_data:
-                        if not isinstance(record_data[field_clean], list):
-                            record_data[field_clean] = [record_data[field_clean]]
-                        if value not in record_data[field_clean]:
-                            record_data[field_clean].append(value)
-                    else:
-                        record_data[field_clean] = value
+                value_clean = re.sub(r'<[^>]+>', '', value).strip()
+                if value_clean:
+                    record_data[field_clean] = value_clean
             
-            # Only add if we have data
-            if record_data:
-                # Clean up - if a field has a list with single item, convert to string
-                for key, val in record_data.items():
-                    if isinstance(val, list) and len(val) == 1:
-                        record_data[key] = val[0]
-                
+            # Pattern 2: <b>FIELD</b> VALUE (without code tag, value until next <br> or <b>)
+            # This pattern is more precise - stops at next <br> or <b>
+            pattern2 = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
+            matches2 = pattern2.findall(part)
+            
+            for field_raw, value in matches2:
+                field_clean = clean_field_name(field_raw)
+                # Skip if this field already processed by pattern1
+                if field_clean in record_data:
+                    continue
+                value_clean = value.strip()
+                # Remove any remaining HTML tags
+                value_clean = re.sub(r'<[^>]+>', '', value_clean)
+                # Remove trailing colons or spaces
+                value_clean = value_clean.strip(':').strip()
+                if value_clean:
+                    record_data[field_clean] = value_clean
+            
+            # Pattern 3: Handle multiple same fields (like multiple passwords)
+            # Find all occurrences of same field
+            temp_data = {}
+            for field_raw, value in matches1:
+                field_clean = clean_field_name(field_raw)
+                value_clean = re.sub(r'<[^>]+>', '', value).strip()
+                if value_clean:
+                    if field_clean in temp_data:
+                        if not isinstance(temp_data[field_clean], list):
+                            temp_data[field_clean] = [temp_data[field_clean]]
+                        temp_data[field_clean].append(value_clean)
+                    else:
+                        temp_data[field_clean] = value_clean
+            
+            for field_raw, value in matches2:
+                field_clean = clean_field_name(field_raw)
+                value_clean = value.strip()
+                value_clean = re.sub(r'<[^>]+>', '', value_clean)
+                value_clean = value_clean.strip(':').strip()
+                if value_clean:
+                    if field_clean in temp_data:
+                        if not isinstance(temp_data[field_clean], list):
+                            temp_data[field_clean] = [temp_data[field_clean]]
+                        temp_data[field_clean].append(value_clean)
+                    else:
+                        temp_data[field_clean] = value_clean
+            
+            # Convert single-item lists to simple values
+            for key, val in temp_data.items():
+                if isinstance(val, list) and len(val) == 1:
+                    temp_data[key] = val[0]
+            
+            if temp_data:
                 all_records.append({
                     "source": source,
-                    "data": record_data
+                    "data": temp_data
                 })
     
     return all_records
