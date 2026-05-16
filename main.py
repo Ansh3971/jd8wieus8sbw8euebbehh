@@ -117,11 +117,9 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
     current_source = None
     records_in_current_source = []
 
-    # Find all blocks at once
     blocks = soup.find_all("div", class_="block")
     
     for block in blocks:
-        # Get source title quickly
         title_elem = block.find("div", class_="block-title")
         source = title_elem.get_text(strip=True) if title_elem else "Unknown"
 
@@ -139,12 +137,9 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
 
-        # Get raw HTML and split quickly
         html_text = str(text_elem)
         
-        # Fast split by double br
         parts = html_text.split("<br><br>")
-        # Also handle variations quickly
         if len(parts) == 1:
             parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
@@ -153,11 +148,9 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
             if not part or '<b>' not in part:
                 continue
 
-            # Parse only this part
             soup_part = BeautifulSoup(part, "html.parser")
             record = {}
 
-            # Use find_all for all bold tags at once
             bold_tags = soup_part.find_all("b")
             for bold in bold_tags:
                 field_tag = bold.get_text(strip=True)
@@ -165,7 +158,6 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
                 if not json_key:
                     continue
 
-                # Check for code tag first
                 code_tag = bold.find_next_sibling("code")
                 if code_tag:
                     value = code_tag.get_text(strip=True)
@@ -173,18 +165,15 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
                         add_to_record(record, json_key, value)
                     continue
 
-                # Check next sibling for text
                 next_sib = bold.next_sibling
                 if next_sib and isinstance(next_sib, str):
                     value = next_sib.strip()
-                    # Take only up to next tag
                     if '<' in value:
                         value = value.split('<')[0].strip()
                     if value:
                         add_to_record(record, json_key, value)
 
             if record:
-                # Convert single-item lists to simple values
                 for key in ["phone", "email"]:
                     if key in record and isinstance(record[key], list) and len(record[key]) == 1:
                         record[key] = record[key][0]
@@ -199,45 +188,50 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
     return all_records
 
 # =========================
-# FAST DOWNLOAD AND PARSE
+# DOWNLOAD WITH CONTINUOUS LOOP (CLICK EVERY TIME)
 # =========================
 
-async def download_and_parse(reply, message):
-    """Download file and parse HTML in parallel"""
+async def download_file_with_loop(reply, sent_message_id):
+    """Keep clicking download button and checking for file until found"""
     file_path = None
     
-    # Click button immediately
-    if reply.buttons:
-        for row in reply.buttons:
-            for btn in row:
-                if DOWNLOAD_BUTTON.lower() in btn.text.lower():
-                    await btn.click()
-                    break
-            if file_path:
-                break
+    # Maximum attempts - will keep trying until file is found
+    max_attempts = 60  # 60 seconds max wait
+    
+    for attempt in range(max_attempts):
+        print(f"Attempt {attempt + 1}: Checking for file...")
         
-        # Wait for file with shorter intervals
-        for _ in range(15):  # Reduced from 30
-            await asyncio.sleep(0.5)  # Reduced from 2 seconds
-            latest = await client.get_messages(BOT_USERNAME, limit=3)  # Reduced limit
-            for msg in latest:
-                if msg.file and msg.id > reply.id:
-                    file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
+        # Try to click download button every time (in case first click didn't work)
+        if reply.buttons:
+            for row in reply.buttons:
+                for btn in row:
+                    if DOWNLOAD_BUTTON.lower() in btn.text.lower():
+                        try:
+                            await btn.click()
+                            print(f"Button clicked on attempt {attempt + 1}")
+                        except Exception as e:
+                            print(f"Click failed: {e}")
+                        break
+                if file_path:
                     break
-            if file_path:
-                break
+        
+        # Check for file
+        try:
+            latest = await client.get_messages(BOT_USERNAME, limit=5)
+            
+            for msg in latest:
+                # Check if this is a new file message
+                if msg.file and msg.id > sent_message_id:
+                    file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
+                    print(f"File found and downloaded: {file_path}")
+                    return file_path
+        except Exception as e:
+            print(f"Error checking messages: {e}")
+        
+        # Wait before next attempt
+        await asyncio.sleep(1)
     
-    # Check if message contains HTML
-    if not file_path and reply.message:
-        html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', reply.message, re.DOTALL | re.IGNORECASE)
-        if html_match:
-            html_content = html_match.group(0)
-            temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{reply.id}.html")
-            with open(temp_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
-            file_path = temp_path
-    
-    return file_path
+    return None
 
 # =========================
 # API ENDPOINTS
@@ -255,16 +249,18 @@ async def search(data: dict):
         
         # Send message
         sent = await client.send_message(BOT_USERNAME, message)
-        print(f"Message sent in {asyncio.get_event_loop().time() - start_time:.2f}s")
+        sent_message_id = sent.id
+        print(f"Message sent (ID: {sent_message_id})")
 
-        # Wait for reply with shorter timeout
+        # Wait for bot reply
         reply = None
-        for i in range(8):  # Max 8 attempts
-            await asyncio.sleep(0.5)  # Check every 0.5 seconds
+        for attempt in range(15):
+            await asyncio.sleep(1)
             messages = await client.get_messages(BOT_USERNAME, limit=5)
             for msg in messages:
-                if not msg.out and msg.id > sent.id and msg.message:
+                if not msg.out and msg.id > sent_message_id and msg.message:
                     reply = msg
+                    print(f"Reply found (ID: {reply.id})")
                     break
             if reply:
                 break
@@ -274,34 +270,38 @@ async def search(data: dict):
         
         print(f"Reply received in {asyncio.get_event_loop().time() - start_time:.2f}s")
 
-        # Download file (optimized)
-        file_path = await download_and_parse(reply, message)
+        # Download file with continuous loop - clicks button repeatedly
+        file_path = await download_file_with_loop(reply, sent_message_id)
         
         if not file_path:
-            return {"status": False, "error": "No file received"}
+            return {"status": False, "error": "No file received after multiple attempts"}
         
         print(f"File downloaded in {asyncio.get_event_loop().time() - start_time:.2f}s")
 
-        # Parse HTML (fast)
+        # Parse HTML
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             html_content = f.read()
         
-        # Run parser in thread pool to avoid blocking
+        # Run parser in thread pool
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
             records_data = await loop.run_in_executor(pool, parse_leakbase_html_fast, html_content)
         
-        # Clean up temp file
+        # Clean up temp file if needed
         if "temp_" in str(file_path):
-            os.remove(file_path)
+            try:
+                os.remove(file_path)
+            except:
+                pass
         
         total_time = asyncio.get_event_loop().time() - start_time
-        print(f"Total time: {total_time:.2f}s | Records: {sum(len(s['records']) for s in records_data)}")
+        total_records = sum(len(s["records"]) for s in records_data)
+        print(f"Total time: {total_time:.2f}s | Records: {total_records}")
         
         return {
             "status": True,
             "query": message,
-            "record_count": sum(len(s["records"]) for s in records_data),
+            "record_count": total_records,
             "data": records_data
         }
 
