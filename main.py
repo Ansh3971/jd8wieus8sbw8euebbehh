@@ -59,12 +59,12 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# SIMPLEST PARSER - DIRECT TEXT EXTRACTION
+# HYBRID PARSER - PRESERVES HTML STRUCTURE
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     """
-    Simplest parser - extract text directly using BeautifulSoup
+    Hybrid parser - uses BeautifulSoup to navigate HTML structure
     """
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
@@ -80,72 +80,86 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
         
-        # Get all text lines
-        text = text_elem.get_text(separator="\n", strip=True)
-        lines = text.split("\n")
+        # Get raw HTML string
+        html_string = str(text_elem)
         
-        current_record = {}
-        is_new_record = True
+        # Split records by double <br> tags
+        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_string)
         
-        for line in lines:
-            line = line.strip()
-            if not line:
+        for part in parts:
+            part = part.strip()
+            if not part or '<b>' not in part:
                 continue
             
-            # Skip description (long lines without colon)
-            if len(line) > 100 and ':' not in line:
+            # Skip description
+            if len(part) > 300 and '📞' not in part and '📩' not in part and '🔑' not in part:
                 continue
             
-            # Check if line contains a field (has colon)
-            if ':' in line:
-                # Split into field and value
-                parts = line.split(':', 1)
-                if len(parts) == 2:
-                    field_raw = parts[0].strip()
-                    value = parts[1].strip()
-                    
-                    # Clean field name
-                    field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_raw)
-                    field_clean = re.sub(r'[^\w\s]', '', field_clean)
-                    field_clean = field_clean.strip().lower().replace(" ", "_")
-                    field_clean = re.sub(r'_+', '_', field_clean)
-                    
-                    if value:
-                        # Handle multiple values for same field
-                        if field_clean in current_record:
-                            if not isinstance(current_record[field_clean], list):
-                                current_record[field_clean] = [current_record[field_clean]]
-                            if value not in current_record[field_clean]:
-                                current_record[field_clean].append(value)
-                        else:
-                            current_record[field_clean] = value
-                        
-                        is_new_record = False
+            record_data = {}
             
-            # If we hit an empty line and have a record, save it
-            if not line and current_record:
+            # Use BeautifulSoup to parse this part
+            part_soup = BeautifulSoup(part, "html.parser")
+            
+            # Find all bold tags which are field labels
+            for bold in part_soup.find_all("b"):
+                field_raw = bold.get_text(strip=True)
+                if not field_raw:
+                    continue
+                
+                # Clean field name
+                field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_raw)
+                field_clean = re.sub(r'[^\w\s]', '', field_clean)
+                field_clean = field_clean.strip().lower().replace(" ", "_")
+                field_clean = re.sub(r'_+', '_', field_clean)
+                
+                # Get value - look for code tag first
+                value = None
+                code_tag = bold.find_next_sibling("code")
+                if code_tag:
+                    value = code_tag.get_text(strip=True)
+                
+                # If no code tag, get the text node after bold
+                if not value:
+                    next_sib = bold.next_sibling
+                    if next_sib and isinstance(next_sib, str):
+                        value = next_sib.strip()
+                        # Remove any HTML tags
+                        value = re.sub(r'<[^>]+>', '', value)
+                        # Stop at next <br>
+                        if '<br' in value:
+                            value = value.split('<br')[0].strip()
+                
+                # If still no value, get parent text
+                if not value:
+                    parent_text = bold.parent.get_text()
+                    value = parent_text.replace(field_raw, "").strip()
+                    # Extract from code tag if present
+                    code_match = re.search(r'<code>(.*?)</code>', parent_text)
+                    if code_match:
+                        value = code_match.group(1).strip()
+                
+                if value:
+                    # Handle multiple values
+                    if field_clean in record_data:
+                        if not isinstance(record_data[field_clean], list):
+                            record_data[field_clean] = [record_data[field_clean]]
+                        if value not in record_data[field_clean]:
+                            record_data[field_clean].append(value)
+                    else:
+                        record_data[field_clean] = value
+            
+            if record_data:
+                # Convert single-item lists to simple values
+                for key, val in record_data.items():
+                    if isinstance(val, list) and len(val) == 1:
+                        record_data[key] = val[0]
+                
                 all_records.append({
                     "source": source,
-                    "data": current_record.copy()
+                    "data": record_data
                 })
-                current_record = {}
-                is_new_record = True
-        
-        # Don't forget the last record
-        if current_record:
-            all_records.append({
-                "source": source,
-                "data": current_record
-            })
-    
-    # Clean up: if a field has list with single item, convert to string
-    for record in all_records:
-        for key, val in record["data"].items():
-            if isinstance(val, list) and len(val) == 1:
-                record["data"][key] = val[0]
     
     return all_records
-
 
 # =========================
 # DOWNLOAD WITH CONTINUOUS LOOP
@@ -155,13 +169,11 @@ async def download_file_with_loop(reply, sent_message_id):
     """Keep clicking download button and checking for file until found"""
     file_path = None
     
-    # Maximum attempts - 60 seconds max wait
     max_attempts = 60
     
     for attempt in range(max_attempts):
         print(f"Attempt {attempt + 1}: Checking for file...")
         
-        # Try to click download button every time
         if reply.buttons:
             for row in reply.buttons:
                 for btn in row:
@@ -175,7 +187,6 @@ async def download_file_with_loop(reply, sent_message_id):
                 if file_path:
                     break
         
-        # Check for file
         try:
             latest = await client.get_messages(BOT_USERNAME, limit=5)
             
@@ -190,7 +201,6 @@ async def download_file_with_loop(reply, sent_message_id):
         await asyncio.sleep(1)
     
     return None
-
 
 # =========================
 # API ENDPOINTS
@@ -269,11 +279,9 @@ async def search(data: dict):
         traceback.print_exc()
         return {"status": False, "error": str(e)}
 
-
 @app.get("/test")
 async def test(q: str):
     return await search({"message": q})
-
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -299,7 +307,6 @@ async def home():
         </body>
     </html>
     """
-
 
 @app.get("/health")
 async def health():
