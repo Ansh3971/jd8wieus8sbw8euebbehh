@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from bs4 import BeautifulSoup
+import concurrent.futures
 
 # =========================
 # LOAD ENV
@@ -58,67 +59,38 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING
+# FIELD MAPPING (OPTIMIZED)
 # =========================
 
+FIELD_MAP = {
+    "📞Telephone": "phone", "📞Phone": "phone", "📞Mobile": "phone",
+    "🏘️Adres": "address", "🏘️Address": "address",
+    "📩Email": "email", "📩E-mail": "email",
+    "🃏Document number": "document_number", "🃏Document No": "document_number",
+    "👤Full name": "full_name", "👤Name": "full_name",
+    "👨The name of the father": "father_name", "👨Father name": "father_name",
+    "🗺️Region": "region", "🗺️Location": "region",
+    "👤Nick": "nick", "👤Nickname": "nick",
+    "📖Passport number": "passport_number",
+    "🔐Encrypted password": "encrypted_password",
+    "🔑Password": "password",
+    "📆Date": "registration_date", "📆The date of registration": "registration_date",
+    "📆Last activity": "last_activity",
+    "🎂Date of birth": "dob",
+    "🌃City": "city", "🇺🇸Stat": "state",
+    "🏤Postal code": "postal_code",
+    "🎯IP": "ip", "🚻Gender": "gender",
+    "👴Age": "age", "📍District": "district",
+    "🔗Link": "link", "🏷️ login": "login",
+    "📰Category": "category", "🗾Country": "country",
+    "⬆Level": "level", "🏫Education": "education",
+    "👤Surname": "surname"
+}
+
 def get_json_key(field_tag: str) -> str:
-    field_tag = field_tag.strip()
-    if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
-        return "phone"
-    if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
-        return "address"
-    if "📩Email" in field_tag or "📩E-mail" in field_tag:
-        return "email"
-    if "🃏Document number" in field_tag or "🃏Document No" in field_tag:
-        return "document_number"
-    if "👤Full name" in field_tag or "👤Name" in field_tag:
-        return "full_name"
-    if "👨The name of the father" in field_tag or "👨Father name" in field_tag:
-        return "father_name"
-    if "🗺️Region" in field_tag or "🗺️Location" in field_tag:
-        return "region"
-    if "👤Nick" in field_tag or "👤Nickname" in field_tag:
-        return "nick"
-    if "📖Passport number" in field_tag:
-        return "passport_number"
-    if "🔐Encrypted password" in field_tag:
-        return "encrypted_password"
-    if "🔑Password" in field_tag:
-        return "password"
-    if "📆Date" in field_tag or "📆The date of registration" in field_tag:
-        return "registration_date"
-    if "📆Last activity" in field_tag:
-        return "last_activity"
-    if "🎂Date of birth" in field_tag:
-        return "dob"
-    if "🌃City" in field_tag:
-        return "city"
-    if "🇺🇸Stat" in field_tag:
-        return "state"
-    if "🏤Postal code" in field_tag:
-        return "postal_code"
-    if "🎯IP" in field_tag:
-        return "ip"
-    if "🚻Gender" in field_tag:
-        return "gender"
-    if "👴Age" in field_tag:
-        return "age"
-    if "📍District" in field_tag:
-        return "district"
-    if "🔗Link" in field_tag:
-        return "link"
-    if "🏷️ login" in field_tag:
-        return "login"
-    if "📰Category" in field_tag:
-        return "category"
-    if "🗾Country" in field_tag:
-        return "country"
-    if "⬆Level" in field_tag:
-        return "level"
-    if "🏫Education" in field_tag:
-        return "education"
-    if "👤Surname" in field_tag:
-        return "surname"
+    for key, value in FIELD_MAP.items():
+        if key in field_tag:
+            return value
     return None
 
 def add_to_record(record: Dict, key: str, value: str):
@@ -136,24 +108,23 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# MAIN PARSER
+# FAST PARSER - OPTIMIZED
 # =========================
 
-def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
+def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
     current_source = None
     records_in_current_source = []
 
+    # Find all blocks at once
     blocks = soup.find_all("div", class_="block")
+    
     for block in blocks:
-        # Get source title
-        source = "Unknown"
+        # Get source title quickly
         title_elem = block.find("div", class_="block-title")
-        if title_elem:
-            source = title_elem.get_text(strip=True)
+        source = title_elem.get_text(strip=True) if title_elem else "Unknown"
 
-        # If source changed, save previous source's records and start new
         if current_source is not None and source != current_source:
             if records_in_current_source:
                 all_records.append({
@@ -168,45 +139,57 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
 
+        # Get raw HTML and split quickly
         html_text = str(text_elem)
-
-        # Split by double <br> tags
-        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
+        
+        # Fast split by double br
+        parts = html_text.split("<br><br>")
+        # Also handle variations quickly
+        if len(parts) == 1:
+            parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
         for part in parts:
             part = part.strip()
             if not part or '<b>' not in part:
                 continue
 
+            # Parse only this part
             soup_part = BeautifulSoup(part, "html.parser")
             record = {}
 
-            for bold in soup_part.find_all("b"):
+            # Use find_all for all bold tags at once
+            bold_tags = soup_part.find_all("b")
+            for bold in bold_tags:
                 field_tag = bold.get_text(strip=True)
                 json_key = get_json_key(field_tag)
                 if not json_key:
                     continue
 
-                value = None
+                # Check for code tag first
                 code_tag = bold.find_next_sibling("code")
                 if code_tag:
                     value = code_tag.get_text(strip=True)
-                else:
-                    next_sibling = bold.next_sibling
-                    if next_sibling and isinstance(next_sibling, str):
-                        raw_text = next_sibling.strip()
-                        br_pos = raw_text.find('<br')
-                        if br_pos != -1:
-                            raw_text = raw_text[:br_pos]
-                        value = raw_text.strip()
+                    if value:
+                        add_to_record(record, json_key, value)
+                    continue
 
-                if value:
-                    add_to_record(record, json_key, value)
+                # Check next sibling for text
+                next_sib = bold.next_sibling
+                if next_sib and isinstance(next_sib, str):
+                    value = next_sib.strip()
+                    # Take only up to next tag
+                    if '<' in value:
+                        value = value.split('<')[0].strip()
+                    if value:
+                        add_to_record(record, json_key, value)
 
             if record:
+                # Convert single-item lists to simple values
+                for key in ["phone", "email"]:
+                    if key in record and isinstance(record[key], list) and len(record[key]) == 1:
+                        record[key] = record[key][0]
                 records_in_current_source.append(record)
 
-    # Add last source's records
     if current_source is not None and records_in_current_source:
         all_records.append({
             "source": current_source,
@@ -216,74 +199,111 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     return all_records
 
 # =========================
+# FAST DOWNLOAD AND PARSE
+# =========================
+
+async def download_and_parse(reply, message):
+    """Download file and parse HTML in parallel"""
+    file_path = None
+    
+    # Click button immediately
+    if reply.buttons:
+        for row in reply.buttons:
+            for btn in row:
+                if DOWNLOAD_BUTTON.lower() in btn.text.lower():
+                    await btn.click()
+                    break
+            if file_path:
+                break
+        
+        # Wait for file with shorter intervals
+        for _ in range(15):  # Reduced from 30
+            await asyncio.sleep(0.5)  # Reduced from 2 seconds
+            latest = await client.get_messages(BOT_USERNAME, limit=3)  # Reduced limit
+            for msg in latest:
+                if msg.file and msg.id > reply.id:
+                    file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
+                    break
+            if file_path:
+                break
+    
+    # Check if message contains HTML
+    if not file_path and reply.message:
+        html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', reply.message, re.DOTALL | re.IGNORECASE)
+        if html_match:
+            html_content = html_match.group(0)
+            temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{reply.id}.html")
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            file_path = temp_path
+    
+    return file_path
+
+# =========================
 # API ENDPOINTS
 # =========================
 
 @app.post("/search")
 async def search(data: dict):
     try:
+        start_time = asyncio.get_event_loop().time()
         message = data.get("message", "")
         if not message:
             return {"status": False, "error": "message required"}
 
         print(f"\n=== SEARCH: {message} ===")
+        
+        # Send message
         sent = await client.send_message(BOT_USERNAME, message)
-        await asyncio.sleep(3)
+        print(f"Message sent in {asyncio.get_event_loop().time() - start_time:.2f}s")
 
-        messages = await client.get_messages(BOT_USERNAME, limit=10)
+        # Wait for reply with shorter timeout
         reply = None
-        for msg in messages:
-            if not msg.out and msg.id > sent.id:
-                reply = msg
+        for i in range(8):  # Max 8 attempts
+            await asyncio.sleep(0.5)  # Check every 0.5 seconds
+            messages = await client.get_messages(BOT_USERNAME, limit=5)
+            for msg in messages:
+                if not msg.out and msg.id > sent.id and msg.message:
+                    reply = msg
+                    break
+            if reply:
                 break
+        
         if not reply:
             return {"status": False, "error": "No response from bot"}
+        
+        print(f"Reply received in {asyncio.get_event_loop().time() - start_time:.2f}s")
 
-        file_path = None
+        # Download file (optimized)
+        file_path = await download_and_parse(reply, message)
+        
+        if not file_path:
+            return {"status": False, "error": "No file received"}
+        
+        print(f"File downloaded in {asyncio.get_event_loop().time() - start_time:.2f}s")
 
-        if reply.buttons:
-            for row in reply.buttons:
-                for btn in row:
-                    if DOWNLOAD_BUTTON.lower() in btn.text.lower():
-                        await btn.click()
-                        break
-                if file_path:
-                    break
-            for _ in range(30):
-                await asyncio.sleep(2)
-                latest = await client.get_messages(BOT_USERNAME, limit=5)
-                for msg in latest:
-                    if msg.file and msg.id > reply.id:
-                        file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
-                        break
-                if file_path:
-                    break
-
-        if not file_path and reply.message:
-            html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', reply.message, re.DOTALL | re.IGNORECASE)
-            if html_match:
-                html_content = html_match.group(0)
-                temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{reply.id}.html")
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    f.write(html_content)
-                file_path = temp_path
-
-        if file_path and os.path.exists(file_path):
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                html_content = f.read()
-            records_data = parse_leakbase_html(html_content)
-            if "temp_" in file_path:
-                os.remove(file_path)
-            
-            # Return only clean JSON without text_output
-            return {
-                "status": True,
-                "query": message,
-                "record_count": sum(len(s["records"]) for s in records_data),
-                "data": records_data
-            }
-
-        return {"status": False, "error": "No file received"}
+        # Parse HTML (fast)
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            html_content = f.read()
+        
+        # Run parser in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            records_data = await loop.run_in_executor(pool, parse_leakbase_html_fast, html_content)
+        
+        # Clean up temp file
+        if "temp_" in str(file_path):
+            os.remove(file_path)
+        
+        total_time = asyncio.get_event_loop().time() - start_time
+        print(f"Total time: {total_time:.2f}s | Records: {sum(len(s['records']) for s in records_data)}")
+        
+        return {
+            "status": True,
+            "query": message,
+            "record_count": sum(len(s["records"]) for s in records_data),
+            "data": records_data
+        }
 
     except Exception as e:
         print(f"ERROR: {str(e)}")
@@ -308,8 +328,6 @@ async def home():
                 input { width: 70%; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
                 button { padding: 12px 24px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
                 button:hover { background: #0056b3; }
-                pre { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
-                .result { margin-top: 20px; }
             </style>
         </head>
         <body>
@@ -325,7 +343,3 @@ async def home():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-# =========================
-# RUN: uvicorn main:app --host 0.0.0.0 --port 8000
-# =========================
