@@ -59,28 +59,12 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# CLEAN FIELD NAME
-# =========================
-
-def clean_field_name(field_raw: str) -> str:
-    """Clean field name by removing emojis and special characters"""
-    # Remove emojis
-    field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_raw)
-    # Remove any remaining non-alphanumeric except spaces
-    field_clean = re.sub(r'[^\w\s]', '', field_clean)
-    # Replace spaces with underscores and convert to lowercase
-    field_clean = field_clean.strip().lower().replace(" ", "_")
-    # Remove duplicate underscores
-    field_clean = re.sub(r'_+', '_', field_clean)
-    return field_clean
-
-# =========================
-# UNIVERSAL PARSER - FIXED
+# SIMPLEST PARSER - DIRECT TEXT EXTRACTION
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     """
-    Universal parser - works on all LeakBase HTML structures
+    Simplest parser - extract text directly using BeautifulSoup
     """
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
@@ -96,93 +80,69 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if not text_elem:
             continue
         
-        # Get the raw HTML string
-        html_string = str(text_elem)
+        # Get all text lines
+        text = text_elem.get_text(separator="\n", strip=True)
+        lines = text.split("\n")
         
-        # Split by double <br> tags to separate records
-        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_string)
+        current_record = {}
+        is_new_record = True
         
-        for part in parts:
-            part = part.strip()
-            if not part:
+        for line in lines:
+            line = line.strip()
+            if not line:
                 continue
             
-            # Skip the description text (no bold tags)
-            if '<b>' not in part:
+            # Skip description (long lines without colon)
+            if len(line) > 100 and ':' not in line:
                 continue
             
-            # Skip if it's just the description
-            if len(part) > 300 and '📞' not in part and '📩' not in part and '🔑' not in part and '🔐' not in part:
-                continue
+            # Check if line contains a field (has colon)
+            if ':' in line:
+                # Split into field and value
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    field_raw = parts[0].strip()
+                    value = parts[1].strip()
+                    
+                    # Clean field name
+                    field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_raw)
+                    field_clean = re.sub(r'[^\w\s]', '', field_clean)
+                    field_clean = field_clean.strip().lower().replace(" ", "_")
+                    field_clean = re.sub(r'_+', '_', field_clean)
+                    
+                    if value:
+                        # Handle multiple values for same field
+                        if field_clean in current_record:
+                            if not isinstance(current_record[field_clean], list):
+                                current_record[field_clean] = [current_record[field_clean]]
+                            if value not in current_record[field_clean]:
+                                current_record[field_clean].append(value)
+                        else:
+                            current_record[field_clean] = value
+                        
+                        is_new_record = False
             
-            record_data = {}
-            
-            # Use regex to find all field-value pairs in order
-            # Pattern 1: <b>FIELD</b> <code>VALUE</code>
-            pattern1 = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
-            matches1 = pattern1.findall(part)
-            
-            for field_raw, value in matches1:
-                field_clean = clean_field_name(field_raw)
-                value_clean = re.sub(r'<[^>]+>', '', value).strip()
-                if value_clean:
-                    record_data[field_clean] = value_clean
-            
-            # Pattern 2: <b>FIELD</b> VALUE (without code tag, value until next <br> or <b>)
-            # This pattern is more precise - stops at next <br> or <b>
-            pattern2 = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
-            matches2 = pattern2.findall(part)
-            
-            for field_raw, value in matches2:
-                field_clean = clean_field_name(field_raw)
-                # Skip if this field already processed by pattern1
-                if field_clean in record_data:
-                    continue
-                value_clean = value.strip()
-                # Remove any remaining HTML tags
-                value_clean = re.sub(r'<[^>]+>', '', value_clean)
-                # Remove trailing colons or spaces
-                value_clean = value_clean.strip(':').strip()
-                if value_clean:
-                    record_data[field_clean] = value_clean
-            
-            # Pattern 3: Handle multiple same fields (like multiple passwords)
-            # Find all occurrences of same field
-            temp_data = {}
-            for field_raw, value in matches1:
-                field_clean = clean_field_name(field_raw)
-                value_clean = re.sub(r'<[^>]+>', '', value).strip()
-                if value_clean:
-                    if field_clean in temp_data:
-                        if not isinstance(temp_data[field_clean], list):
-                            temp_data[field_clean] = [temp_data[field_clean]]
-                        temp_data[field_clean].append(value_clean)
-                    else:
-                        temp_data[field_clean] = value_clean
-            
-            for field_raw, value in matches2:
-                field_clean = clean_field_name(field_raw)
-                value_clean = value.strip()
-                value_clean = re.sub(r'<[^>]+>', '', value_clean)
-                value_clean = value_clean.strip(':').strip()
-                if value_clean:
-                    if field_clean in temp_data:
-                        if not isinstance(temp_data[field_clean], list):
-                            temp_data[field_clean] = [temp_data[field_clean]]
-                        temp_data[field_clean].append(value_clean)
-                    else:
-                        temp_data[field_clean] = value_clean
-            
-            # Convert single-item lists to simple values
-            for key, val in temp_data.items():
-                if isinstance(val, list) and len(val) == 1:
-                    temp_data[key] = val[0]
-            
-            if temp_data:
+            # If we hit an empty line and have a record, save it
+            if not line and current_record:
                 all_records.append({
                     "source": source,
-                    "data": temp_data
+                    "data": current_record.copy()
                 })
+                current_record = {}
+                is_new_record = True
+        
+        # Don't forget the last record
+        if current_record:
+            all_records.append({
+                "source": source,
+                "data": current_record
+            })
+    
+    # Clean up: if a field has list with single item, convert to string
+    for record in all_records:
+        for key, val in record["data"].items():
+            if isinstance(val, list) and len(val) == 1:
+                record["data"][key] = val[0]
     
     return all_records
 
