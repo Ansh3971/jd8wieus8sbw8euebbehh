@@ -59,59 +59,13 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING (OPTIMIZED)
+# POSITION-BASED PARSER (NO FIELD MAPPING)
 # =========================
 
-FIELD_MAP = {
-    "📞Telephone": "phone", "📞Phone": "phone", "📞Mobile": "phone",
-    "🏘️Adres": "address", "🏘️Address": "address",
-    "📩Email": "email", "📩E-mail": "email",
-    "🃏Document number": "document_number", "🃏Document No": "document_number",
-    "👤Full name": "full_name", "👤Name": "full_name",
-    "👨The name of the father": "father_name", "👨Father name": "father_name",
-    "🗺️Region": "region", "🗺️Location": "region",
-    "👤Nick": "nick", "👤Nickname": "nick",
-    "📖Passport number": "passport_number",
-    "🔐Encrypted password": "encrypted_password",
-    "🔑Password": "password",
-    "📆Date": "registration_date", "📆The date of registration": "registration_date",
-    "📆Last activity": "last_activity",
-    "🎂Date of birth": "dob",
-    "🌃City": "city", "🇺🇸Stat": "state",
-    "🏤Postal code": "postal_code",
-    "🎯IP": "ip", "🚻Gender": "gender",
-    "👴Age": "age", "📍District": "district",
-    "🔗Link": "link", "🏷️ login": "login",
-    "📰Category": "category", "🗾Country": "country",
-    "⬆Level": "level", "🏫Education": "education",
-    "👤Surname": "surname"
-}
-
-def get_json_key(field_tag: str) -> str:
-    for key, value in FIELD_MAP.items():
-        if key in field_tag:
-            return value
-    return None
-
-def add_to_record(record: Dict, key: str, value: str):
-    if key == "address" and value.replace(" ", "").isdigit():
-        return
-    if key in ["phone", "email"]:
-        if key not in record:
-            record[key] = value
-    elif key in ["phones", "addresses", "emails"]:
-        record.setdefault(key, [])
-        if value not in record[key]:
-            record[key].append(value)
-    else:
-        if key not in record:
-            record[key] = value
-
-# =========================
-# FAST PARSER - OPTIMIZED
-# =========================
-
-def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
+def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
+    """
+    Parse HTML without any field mapping - preserves exact order of fields
+    """
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
     current_source = None
@@ -120,9 +74,11 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
     blocks = soup.find_all("div", class_="block")
     
     for block in blocks:
+        # Get source title
         title_elem = block.find("div", class_="block-title")
         source = title_elem.get_text(strip=True) if title_elem else "Unknown"
 
+        # If source changed, save previous records
         if current_source is not None and source != current_source:
             if records_in_current_source:
                 all_records.append({
@@ -139,46 +95,51 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
 
         html_text = str(text_elem)
         
-        parts = html_text.split("<br><br>")
-        if len(parts) == 1:
-            parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
+        # Split by double br tags
+        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
         for part in parts:
             part = part.strip()
             if not part or '<b>' not in part:
                 continue
 
+            # Parse just this record
             soup_part = BeautifulSoup(part, "html.parser")
             record = {}
-
-            bold_tags = soup_part.find_all("b")
-            for bold in bold_tags:
-                field_tag = bold.get_text(strip=True)
-                json_key = get_json_key(field_tag)
-                if not json_key:
-                    continue
-
+            
+            # Find all field-value pairs in order
+            for bold in soup_part.find_all("b"):
+                field = bold.get_text(strip=True)
+                # Remove emoji and colon for cleaner field name
+                field_clean = re.sub(r'[^\w\s]', '', field)
+                field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_clean)
+                field_clean = field_clean.strip().replace(" ", "_").lower()
+                
+                # Get value - check for code tag first
+                value = None
                 code_tag = bold.find_next_sibling("code")
                 if code_tag:
                     value = code_tag.get_text(strip=True)
-                    if value:
-                        add_to_record(record, json_key, value)
-                    continue
-
-                next_sib = bold.next_sibling
-                if next_sib and isinstance(next_sib, str):
-                    value = next_sib.strip()
-                    if '<' in value:
-                        value = value.split('<')[0].strip()
-                    if value:
-                        add_to_record(record, json_key, value)
+                else:
+                    next_sib = bold.next_sibling
+                    if next_sib and isinstance(next_sib, str):
+                        value = next_sib.strip()
+                        if '<' in value:
+                            value = value.split('<')[0].strip()
+                
+                if value:
+                    # Handle multiple same fields (like multiple phones)
+                    if field_clean in record:
+                        if not isinstance(record[field_clean], list):
+                            record[field_clean] = [record[field_clean]]
+                        record[field_clean].append(value)
+                    else:
+                        record[field_clean] = value
 
             if record:
-                for key in ["phone", "email"]:
-                    if key in record and isinstance(record[key], list) and len(record[key]) == 1:
-                        record[key] = record[key][0]
                 records_in_current_source.append(record)
 
+    # Add last source's records
     if current_source is not None and records_in_current_source:
         all_records.append({
             "source": current_source,
@@ -188,20 +149,20 @@ def parse_leakbase_html_fast(html_content: str) -> List[Dict[str, Any]]:
     return all_records
 
 # =========================
-# DOWNLOAD WITH CONTINUOUS LOOP (CLICK EVERY TIME)
+# DOWNLOAD WITH CONTINUOUS LOOP
 # =========================
 
 async def download_file_with_loop(reply, sent_message_id):
     """Keep clicking download button and checking for file until found"""
     file_path = None
     
-    # Maximum attempts - will keep trying until file is found
-    max_attempts = 60  # 60 seconds max wait
+    # Maximum attempts - 60 seconds max wait
+    max_attempts = 60
     
     for attempt in range(max_attempts):
         print(f"Attempt {attempt + 1}: Checking for file...")
         
-        # Try to click download button every time (in case first click didn't work)
+        # Try to click download button every time
         if reply.buttons:
             for row in reply.buttons:
                 for btn in row:
@@ -220,7 +181,6 @@ async def download_file_with_loop(reply, sent_message_id):
             latest = await client.get_messages(BOT_USERNAME, limit=5)
             
             for msg in latest:
-                # Check if this is a new file message
                 if msg.file and msg.id > sent_message_id:
                     file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
                     print(f"File found and downloaded: {file_path}")
@@ -228,7 +188,6 @@ async def download_file_with_loop(reply, sent_message_id):
         except Exception as e:
             print(f"Error checking messages: {e}")
         
-        # Wait before next attempt
         await asyncio.sleep(1)
     
     return None
@@ -247,7 +206,6 @@ async def search(data: dict):
 
         print(f"\n=== SEARCH: {message} ===")
         
-        # Send message
         sent = await client.send_message(BOT_USERNAME, message)
         sent_message_id = sent.id
         print(f"Message sent (ID: {sent_message_id})")
@@ -270,7 +228,7 @@ async def search(data: dict):
         
         print(f"Reply received in {asyncio.get_event_loop().time() - start_time:.2f}s")
 
-        # Download file with continuous loop - clicks button repeatedly
+        # Download file
         file_path = await download_file_with_loop(reply, sent_message_id)
         
         if not file_path:
@@ -285,9 +243,9 @@ async def search(data: dict):
         # Run parser in thread pool
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            records_data = await loop.run_in_executor(pool, parse_leakbase_html_fast, html_content)
+            records_data = await loop.run_in_executor(pool, parse_leakbase_html, html_content)
         
-        # Clean up temp file if needed
+        # Clean up temp file
         if "temp_" in str(file_path):
             try:
                 os.remove(file_path)
