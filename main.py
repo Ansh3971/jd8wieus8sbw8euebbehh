@@ -59,131 +59,75 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# SIMPLE PARSER - DIRECT HTML EXTRACTION WITH VALUE CAPTURE
+# UNIVERSAL PARSER - WORKS ON ALL STRUCTURES
 # =========================
+
+def clean_field_name(field_raw: str) -> str:
+    """Clean field name by removing emojis and special characters"""
+    # Remove emojis
+    field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_raw)
+    # Remove any remaining non-alphanumeric except spaces and underscores
+    field_clean = re.sub(r'[^\w\s]', '', field_clean)
+    # Replace spaces with underscores and convert to lowercase
+    field_clean = field_clean.strip().lower().replace(" ", "_")
+    # Remove duplicate underscores
+    field_clean = re.sub(r'_+', '_', field_clean)
+    return field_clean
+
+
+def extract_value_from_bold(bold, part_html: str) -> str:
+    """Extract value from a bold tag using multiple methods"""
+    value = None
+    
+    # Method 1: Check for <code> tag as next sibling
+    code_tag = bold.find_next_sibling("code")
+    if code_tag:
+        value = code_tag.get_text(strip=True)
+    
+    # Method 2: Check for text node as next sibling
+    if not value:
+        next_sib = bold.next_sibling
+        if next_sib and isinstance(next_sib, str):
+            value = next_sib.strip()
+            # Remove any HTML tags that might be in the text
+            if '<' in value:
+                value = re.sub(r'<[^>]+>', '', value).strip()
+    
+    # Method 3: Use regex on the part HTML
+    if not value:
+        bold_text = bold.get_text(strip=True)
+        # Escape special regex characters in bold_text
+        escaped_bold = re.escape(bold_text)
+        # Pattern: <b>bold_text</b> <code>VALUE</code>
+        pattern1 = re.compile(rf'<b>{escaped_bold}</b>\s*<code>(.*?)</code>', re.DOTALL)
+        match1 = pattern1.search(part_html)
+        if match1:
+            value = match1.group(1).strip()
+        
+        # Pattern: <b>bold_text</b> VALUE (until next <br> or <b>)
+        if not value:
+            pattern2 = re.compile(rf'<b>{escaped_bold}</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
+            match2 = pattern2.search(part_html)
+            if match2:
+                value = match2.group(1).strip()
+                # Remove any remaining HTML tags
+                value = re.sub(r'<[^>]+>', '', value).strip()
+    
+    # Clean the value
+    if value:
+        # Remove any HTML entities
+        value = re.sub(r'&[a-z]+;', '', value)
+        # Remove any remaining HTML tags
+        value = re.sub(r'<[^>]+>', '', value)
+        # Strip whitespace
+        value = value.strip()
+    
+    return value
+
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     """
-    Parse HTML directly - works by extracting text and matching patterns
-    """
-    soup = BeautifulSoup(html_content, "html.parser")
-    all_records = []
-    
-    blocks = soup.find_all("div", class_="block")
-    
-    for block in blocks:
-        # Get source title
-        title_elem = block.find("div", class_="block-title")
-        source = title_elem.get_text(strip=True) if title_elem else "Unknown"
-        
-        # Get block-text content
-        text_elem = block.find("div", class_="block-text")
-        if not text_elem:
-            continue
-        
-        # Get the raw HTML as string
-        html_text = str(text_elem)
-        
-        # Split by double <br> tags to separate records
-        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
-        
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            
-            # Skip the description text (no bold tags)
-            if '<b>' not in part:
-                continue
-            
-            # Create a temporary soup for this part
-            part_soup = BeautifulSoup(part, "html.parser")
-            record_data = {}
-            
-            # Find all bold tags and extract field-value pairs
-            for bold in part_soup.find_all("b"):
-                # Get the field name (bold text)
-                field_raw = bold.get_text(strip=True)
-                
-                # Clean field name: remove emojis, special chars, convert to lowercase with underscores
-                field_clean = re.sub(r'[^\w\s]', '', field_raw)
-                field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_clean)
-                field_clean = field_clean.strip().lower().replace(" ", "_")
-                
-                # Get the value - try multiple methods
-                value = None
-                
-                # Method 1: Next sibling <code> tag
-                code_tag = bold.find_next_sibling("code")
-                if code_tag:
-                    value = code_tag.get_text(strip=True)
-                
-                # Method 2: Next sibling text node
-                if not value:
-                    next_sib = bold.next_sibling
-                    if next_sib and isinstance(next_sib, str):
-                        value = next_sib.strip()
-                        # Remove any HTML tags that might be in the text
-                        if '<' in value:
-                            value = re.sub(r'<[^>]+>', '', value).strip()
-                
-                # Method 3: Get all text after bold until next bold or end
-                if not value:
-                    # Get all following siblings until next <b> or end
-                    siblings = []
-                    for sibling in bold.next_siblings:
-                        if sibling.name == 'b':
-                            break
-                        if isinstance(sibling, str):
-                            siblings.append(sibling.strip())
-                        elif sibling.name == 'code':
-                            siblings.append(sibling.get_text(strip=True))
-                    if siblings:
-                        value = ' '.join(siblings).strip()
-                        # Clean up
-                        value = re.sub(r'<[^>]+>', '', value)
-                
-                # Method 4: Get parent text and remove field name
-                if not value:
-                    parent_text = bold.parent.get_text()
-                    value = parent_text.replace(field_raw, "").strip()
-                    # Extract from code tag if present
-                    code_match = re.search(r'<code>(.*?)</code>', parent_text)
-                    if code_match:
-                        value = code_match.group(1).strip()
-                
-                # Clean the value
-                if value:
-                    # Remove any remaining HTML tags
-                    value = re.sub(r'<[^>]+>', '', value)
-                    value = value.strip()
-                    
-                    # Store the value
-                    if field_clean in record_data:
-                        # Handle multiple values (like multiple phones)
-                        if not isinstance(record_data[field_clean], list):
-                            record_data[field_clean] = [record_data[field_clean]]
-                        if value not in record_data[field_clean]:
-                            record_data[field_clean].append(value)
-                    else:
-                        record_data[field_clean] = value
-            
-            # Only add if we have data
-            if record_data:
-                all_records.append({
-                    "source": source,
-                    "data": record_data
-                })
-    
-    return all_records
-
-# =========================
-# ALTERNATIVE: PARSE USING ORIGINAL STRING POSITION
-# =========================
-
-def parse_leakbase_html_simple(html_content: str) -> List[Dict[str, Any]]:
-    """
-    Parse using simple string find operations - most reliable
+    Universal parser - works on all LeakBase HTML structures
     """
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
@@ -202,47 +146,66 @@ def parse_leakbase_html_simple(html_content: str) -> List[Dict[str, Any]]:
         # Get the raw HTML string
         html_string = str(text_elem)
         
-        # Find all record separators (double br)
-        # Split by double br while keeping the content
-        record_strings = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_string)
+        # Split by double <br> tags to separate records
+        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_string)
         
-        for record_str in record_strings:
-            record_str = record_str.strip()
-            if not record_str or '<b>' not in record_str:
+        for part in parts:
+            part = part.strip()
+            if not part:
                 continue
             
-            # Skip description
-            if len(record_str) > 200 and '📞' not in record_str and '🏘️' not in record_str:
+            # Skip the description text (no bold tags or too long)
+            if '<b>' not in part:
                 continue
             
+            # Skip if it's just the description (more than 200 chars and no emoji fields)
+            if len(part) > 300 and '📞' not in part and '📩' not in part and '🔑' not in part and '🔐' not in part:
+                continue
+            
+            # Parse this part with BeautifulSoup
+            part_soup = BeautifulSoup(part, "html.parser")
             record_data = {}
             
-            # Find all pattern: <b>TEXT</b> <code>VALUE</code>
-            pattern1 = re.compile(r'<b>(.+?)</b>\s*<code>(.+?)</code>')
-            matches1 = pattern1.findall(record_str)
-            for field_name, value in matches1:
-                field_clean = re.sub(r'[^\w\s]', '', field_name)
-                field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_clean)
-                field_clean = field_clean.strip().lower().replace(" ", "_")
-                record_data[field_clean] = value.strip()
+            # Find all bold tags which represent field names
+            bold_tags = part_soup.find_all("b")
             
-            # Find pattern: <b>TEXT</b> VALUE (without code tag)
-            pattern2 = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)')
-            matches2 = pattern2.findall(record_str)
-            for field_name, value in matches2:
-                field_clean = re.sub(r'[^\w\s]', '', field_name)
-                field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_clean)
-                field_clean = field_clean.strip().lower().replace(" ", "_")
-                if field_clean not in record_data:
-                    record_data[field_clean] = value.strip()
+            for bold in bold_tags:
+                field_raw = bold.get_text(strip=True)
+                if not field_raw:
+                    continue
+                
+                # Clean the field name
+                field_clean = clean_field_name(field_raw)
+                if not field_clean:
+                    continue
+                
+                # Extract the value
+                value = extract_value_from_bold(bold, part)
+                
+                if value:
+                    # Handle multiple values (like multiple passwords, phones, etc.)
+                    if field_clean in record_data:
+                        if not isinstance(record_data[field_clean], list):
+                            record_data[field_clean] = [record_data[field_clean]]
+                        if value not in record_data[field_clean]:
+                            record_data[field_clean].append(value)
+                    else:
+                        record_data[field_clean] = value
             
+            # Only add if we have data
             if record_data:
+                # Clean up - if a field has a list with single item, convert to string
+                for key, val in record_data.items():
+                    if isinstance(val, list) and len(val) == 1:
+                        record_data[key] = val[0]
+                
                 all_records.append({
                     "source": source,
                     "data": record_data
                 })
     
     return all_records
+
 
 # =========================
 # DOWNLOAD WITH CONTINUOUS LOOP
@@ -287,6 +250,7 @@ async def download_file_with_loop(reply, sent_message_id):
         await asyncio.sleep(1)
     
     return None
+
 
 # =========================
 # API ENDPOINTS
@@ -336,12 +300,10 @@ async def search(data: dict):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             html_content = f.read()
         
-        # Try both parsing methods
-        records_data = parse_leakbase_html_simple(html_content)
-        
-        # If first method returns empty or has empty values, try second method
-        if not records_data or all(not r['data'] for r in records_data):
-            records_data = parse_leakbase_html(html_content)
+        # Run parser in thread pool
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            records_data = await loop.run_in_executor(pool, parse_leakbase_html, html_content)
         
         # Clean up temp file
         if "temp_" in str(file_path):
@@ -367,9 +329,11 @@ async def search(data: dict):
         traceback.print_exc()
         return {"status": False, "error": str(e)}
 
+
 @app.get("/test")
 async def test(q: str):
     return await search({"message": q})
+
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -395,6 +359,7 @@ async def home():
         </body>
     </html>
     """
+
 
 @app.get("/health")
 async def health():
