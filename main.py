@@ -124,7 +124,6 @@ def get_json_key(field_tag: str) -> str:
 def add_to_record(record: Dict, key: str, value: str):
     if key == "address" and value.replace(" ", "").isdigit():
         return
-    # For phone, email - store as simple value, not list
     if key in ["phone", "email"]:
         if key not in record:
             record[key] = value
@@ -217,148 +216,6 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     return all_records
 
 # =========================
-# FORMAT OUTPUT AS TEXT
-# =========================
-
-def format_records_as_text(records_data: List[Dict]) -> str:
-    """Convert records to clean text format with minimal spacing"""
-    lines = []
-    
-    for source_data in records_data:
-        source = source_data["source"]
-        records = source_data["records"]
-        
-        lines.append(f"\n📁 {source}\n")
-        
-        for idx, record in enumerate(records):
-            # Phone
-            if "phone" in record:
-                lines.append(f"📞 {record['phone']}")
-            
-            # Multiple phones (if any)
-            if "phones" in record:
-                for phone in record["phones"]:
-                    lines.append(f"📞 {phone}")
-            
-            # Email
-            if "email" in record:
-                lines.append(f"📧 {record['email']}")
-            
-            if "emails" in record:
-                for email in record["emails"]:
-                    lines.append(f"📧 {email}")
-            
-            # Address
-            if "address" in record:
-                lines.append(f"📍 {record['address']}")
-            
-            if "addresses" in record:
-                for addr in record["addresses"]:
-                    lines.append(f"📍 {addr}")
-            
-            # Full name
-            if "full_name" in record:
-                lines.append(f"👤 {record['full_name']}")
-            
-            # Father name
-            if "father_name" in record:
-                lines.append(f"👨 {record['father_name']}")
-            
-            # Document number
-            if "document_number" in record:
-                lines.append(f"🆔 {record['document_number']}")
-            
-            # Passport number
-            if "passport_number" in record:
-                lines.append(f"🛂 {record['passport_number']}")
-            
-            # Nick
-            if "nick" in record:
-                lines.append(f"🏷️ {record['nick']}")
-            
-            # Region
-            if "region" in record:
-                lines.append(f"🌍 {record['region']}")
-            
-            # Password
-            if "password" in record:
-                lines.append(f"🔑 {record['password']}")
-            
-            if "encrypted_password" in record:
-                lines.append(f"🔐 {record['encrypted_password']}")
-            
-            # Date fields
-            if "registration_date" in record:
-                lines.append(f"📅 {record['registration_date']}")
-            
-            if "last_activity" in record:
-                lines.append(f"⏰ {record['last_activity']}")
-            
-            if "dob" in record:
-                lines.append(f"🎂 {record['dob']}")
-            
-            # Location
-            if "city" in record:
-                lines.append(f"🏙️ {record['city']}")
-            
-            if "state" in record:
-                lines.append(f"🗺️ {record['state']}")
-            
-            if "postal_code" in record:
-                lines.append(f"📮 {record['postal_code']}")
-            
-            # IP
-            if "ip" in record:
-                lines.append(f"💻 {record['ip']}")
-            
-            # Gender/Age/District
-            if "gender" in record:
-                lines.append(f"⚥ {record['gender']}")
-            
-            if "age" in record:
-                lines.append(f"📊 {record['age']}")
-            
-            if "district" in record:
-                lines.append(f"📍 {record['district']}")
-            
-            # Link
-            if "link" in record:
-                lines.append(f"🔗 {record['link']}")
-            
-            # Login
-            if "login" in record:
-                lines.append(f"🔑 {record['login']}")
-            
-            # Category
-            if "category" in record:
-                lines.append(f"📂 {record['category']}")
-            
-            # Country
-            if "country" in record:
-                lines.append(f"🌐 {record['country']}")
-            
-            # Level
-            if "level" in record:
-                lines.append(f"📈 {record['level']}")
-            
-            # Education
-            if "education" in record:
-                lines.append(f"🎓 {record['education']}")
-            
-            # Surname
-            if "surname" in record:
-                lines.append(f"📝 {record['surname']}")
-            
-            # Add separator between records (except last)
-            if idx < len(records) - 1:
-                lines.append("")
-        
-        # Add blank line between different sources
-        lines.append("")
-    
-    return "\n".join(lines)
-
-# =========================
 # API ENDPOINTS
 # =========================
 
@@ -418,13 +275,11 @@ async def search(data: dict):
             if "temp_" in file_path:
                 os.remove(file_path)
             
-            # Also return JSON format for flexibility
+            # Return only clean JSON without text_output
             return {
                 "status": True,
                 "query": message,
                 "record_count": sum(len(s["records"]) for s in records_data),
-                "source_count": len(records_data),
-                "text_output": format_records_as_text(records_data),
                 "data": records_data
             }
 
@@ -453,7 +308,7 @@ async def home():
                 input { width: 70%; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
                 button { padding: 12px 24px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
                 button:hover { background: #0056b3; }
-                pre { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-family: monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word; }
+                pre { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
                 .result { margin-top: 20px; }
             </style>
         </head>
