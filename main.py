@@ -59,93 +59,149 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# POSITION-BASED PARSER (NO FIELD MAPPING)
+# SIMPLE PARSER - DIRECT HTML EXTRACTION
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     """
-    Parse HTML without any field mapping - preserves exact order of fields
+    Parse HTML directly without any complex logic
     """
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
-    current_source = None
-    records_in_current_source = []
-
+    
     blocks = soup.find_all("div", class_="block")
     
     for block in blocks:
         # Get source title
         title_elem = block.find("div", class_="block-title")
         source = title_elem.get_text(strip=True) if title_elem else "Unknown"
-
-        # If source changed, save previous records
-        if current_source is not None and source != current_source:
-            if records_in_current_source:
-                all_records.append({
-                    "source": current_source,
-                    "records": records_in_current_source
-                })
-            records_in_current_source = []
         
-        current_source = source
-
+        # Get all records within this block
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
             continue
-
+        
+        # Get raw HTML and find all record parts
         html_text = str(text_elem)
         
         # Split by double br tags
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
-
+        
         for part in parts:
             part = part.strip()
             if not part or '<b>' not in part:
                 continue
-
-            # Parse just this record
-            soup_part = BeautifulSoup(part, "html.parser")
-            record = {}
             
-            # Find all field-value pairs in order
-            for bold in soup_part.find_all("b"):
-                field = bold.get_text(strip=True)
-                # Remove emoji and colon for cleaner field name
-                field_clean = re.sub(r'[^\w\s]', '', field)
-                field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_clean)
-                field_clean = field_clean.strip().replace(" ", "_").lower()
-                
-                # Get value - check for code tag first
-                value = None
-                code_tag = bold.find_next_sibling("code")
-                if code_tag:
-                    value = code_tag.get_text(strip=True)
-                else:
-                    next_sib = bold.next_sibling
-                    if next_sib and isinstance(next_sib, str):
-                        value = next_sib.strip()
-                        if '<' in value:
-                            value = value.split('<')[0].strip()
-                
-                if value:
-                    # Handle multiple same fields (like multiple phones)
-                    if field_clean in record:
-                        if not isinstance(record[field_clean], list):
-                            record[field_clean] = [record[field_clean]]
-                        record[field_clean].append(value)
+            # Extract all fields using simple pattern
+            # Pattern: <b>FIELD_NAME</b> <code>VALUE</code> or <b>FIELD_NAME</b> VALUE
+            fields = {}
+            
+            # Method 1: Find all <b> tags and their following <code> tags
+            for bold in re.finditer(r'<b>(.+?)</b>\s*<code>(.*?)</code>', part, re.DOTALL):
+                field_name = bold.group(1).strip()
+                field_value = bold.group(2).strip()
+                # Clean field name
+                field_name_clean = re.sub(r'[^\w\s]', '', field_name)
+                field_name_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_name_clean)
+                field_name_clean = field_name_clean.strip().replace(" ", "_").lower()
+                fields[field_name_clean] = field_value
+            
+            # Method 2: Find <b> tags with plain text values (no code tag)
+            for bold in re.finditer(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', part, re.DOTALL):
+                field_name = bold.group(1).strip()
+                field_value = bold.group(2).strip()
+                # Skip if already captured by code tag method
+                field_name_clean = re.sub(r'[^\w\s]', '', field_name)
+                field_name_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_name_clean)
+                field_name_clean = field_name_clean.strip().replace(" ", "_").lower()
+                if field_name_clean not in fields:
+                    fields[field_name_clean] = field_value
+            
+            if fields:
+                all_records.append({
+                    "source": source,
+                    "data": fields
+                })
+    
+    return all_records
+
+# =========================
+# ALTERNATIVE: PARSE USING ORIGINAL STRING POSITION
+# =========================
+
+def parse_leakbase_html_original(html_content: str) -> List[Dict[str, Any]]:
+    """
+    Parse using original text lines - most reliable
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+    all_records = []
+    
+    blocks = soup.find_all("div", class_="block")
+    
+    for block in blocks:
+        # Get source title
+        title_elem = block.find("div", class_="block-title")
+        source = title_elem.get_text(strip=True) if title_elem else "Unknown"
+        
+        text_elem = block.find("div", class_="block-text")
+        if not text_elem:
+            continue
+        
+        # Get plain text lines
+        text = text_elem.get_text(separator="\n", strip=True)
+        lines = text.split("\n")
+        
+        current_record = {}
+        is_first_field = True
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Skip the description paragraph
+            if len(line) > 100 and ':' not in line:
+                continue
+            
+            # Check if line contains a field (starts with emoji or has colon)
+            if ':' in line:
+                # Split into field and value
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    field_raw = parts[0].strip()
+                    value = parts[1].strip()
+                    
+                    # Clean field name
+                    field_clean = re.sub(r'[^\w\s]', '', field_raw)
+                    field_clean = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', field_clean)
+                    field_clean = field_clean.strip().replace(" ", "_").lower()
+                    
+                    # If this is a new record (starting with telephone or email)
+                    if is_first_field and current_record:
+                        all_records.append({
+                            "source": source,
+                            "data": current_record
+                        })
+                        current_record = {}
+                        is_first_field = True
+                    
+                    # Handle multiple values for same field
+                    if field_clean in current_record:
+                        if not isinstance(current_record[field_clean], list):
+                            current_record[field_clean] = [current_record[field_clean]]
+                        current_record[field_clean].append(value)
                     else:
-                        record[field_clean] = value
-
-            if record:
-                records_in_current_source.append(record)
-
-    # Add last source's records
-    if current_source is not None and records_in_current_source:
-        all_records.append({
-            "source": current_source,
-            "records": records_in_current_source
-        })
-
+                        current_record[field_clean] = value
+                    
+                    is_first_field = False
+        
+        # Add the last record
+        if current_record:
+            all_records.append({
+                "source": source,
+                "data": current_record
+            })
+    
     return all_records
 
 # =========================
@@ -240,10 +296,12 @@ async def search(data: dict):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             html_content = f.read()
         
-        # Run parser in thread pool
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            records_data = await loop.run_in_executor(pool, parse_leakbase_html, html_content)
+        # Try both parsing methods
+        records_data = parse_leakbase_html_original(html_content)
+        
+        # If first method returns empty, try second method
+        if not records_data:
+            records_data = parse_leakbase_html(html_content)
         
         # Clean up temp file
         if "temp_" in str(file_path):
@@ -253,7 +311,7 @@ async def search(data: dict):
                 pass
         
         total_time = asyncio.get_event_loop().time() - start_time
-        total_records = sum(len(s["records"]) for s in records_data)
+        total_records = len(records_data)
         print(f"Total time: {total_time:.2f}s | Records: {total_records}")
         
         return {
