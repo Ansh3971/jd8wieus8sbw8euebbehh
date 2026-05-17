@@ -15,10 +15,10 @@ from bs4 import BeautifulSoup
 
 load_dotenv()
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-SESSION = os.getenv("SESSION")
-BOT_USERNAME = os.getenv("BOT_USERNAME")
+API_ID = int(os.getenv("API_ID", 12345))
+API_HASH = os.getenv("API_HASH", "your_api_hash")
+SESSION = os.getenv("SESSION", "your_session_string")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "your_bot")
 DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
 # =========================
@@ -63,6 +63,7 @@ async def shutdown():
 
 def get_json_key(field_tag: str) -> str:
     field_tag = field_tag.strip()
+    # Keys updated to exactly match your requested JSON output
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
         return "telephone"
     if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
@@ -126,12 +127,12 @@ def get_json_key(field_tag: str) -> str:
     return None
 
 def add_to_record(record: Dict, key: str, value: str):
-    if key == "address" and value.replace(" ", "").isdigit():
+    if key in ["adres", "address"] and value.replace(" ", "").isdigit():
         return
-    if key in ["phone", "email"]:
+    if key in ["telephone", "phone", "email"]:
         if key not in record:
             record[key] = value
-    elif key in ["phones", "addresses", "emails"]:
+    elif key in ["phones", "addresses", "emails", "telephones"]:
         record.setdefault(key, [])
         if value not in record[key]:
             record[key].append(value)
@@ -140,12 +141,13 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# MAIN PARSER (FIXED)
+# MAIN PARSER
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
+    current_source = None
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
@@ -155,41 +157,54 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if title_elem:
             source = title_elem.get_text(strip=True)
 
+        current_source = source
+
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
             continue
 
-        record = {}
-        for bold in text_elem.find_all("b"):
-            field_tag = bold.get_text(strip=True)
-            json_key = get_json_key(field_tag)
-            
-            if not json_key:
+        html_text = str(text_elem)
+
+        # Split by double <br> tags
+        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
+
+        for part in parts:
+            part = part.strip()
+            if not part or '<b>' not in part:
                 continue
 
-            value = None
-            code_tag = bold.find_next_sibling("code")
-            
-            # Extract Value Correctly
-            if code_tag and bold.next_element == code_tag.previous_element:
-                value = code_tag.get_text(strip=True)
-            else:
-                next_sibling = bold.next_sibling
-                if next_sibling and isinstance(next_sibling, str):
-                    raw_text = next_sibling.strip()
-                    br_pos = raw_text.find('<br')
-                    if br_pos != -1:
-                        raw_text = raw_text[:br_pos]
-                    value = raw_text.lstrip(':').strip()
+            soup_part = BeautifulSoup(part, "html.parser")
+            record = {}
 
-            if value:
-                add_to_record(record, json_key, value)
+            for bold in soup_part.find_all("b"):
+                field_tag = bold.get_text(strip=True)
+                json_key = get_json_key(field_tag)
+                if not json_key:
+                    continue
 
-        if record:
-            all_records.append({
-                "source": source,
-                "data": record
-            })
+                # --- FIX: Stop jumping to the wrong <code> tag ---
+                raw_text = ""
+                for sibling in bold.next_siblings:
+                    if getattr(sibling, 'name', None) in ['b', 'br']:
+                        break
+                    if getattr(sibling, 'name', None) == 'code':
+                        raw_text += sibling.get_text(strip=True)
+                    elif isinstance(sibling, str):
+                        raw_text += sibling
+                
+                value = raw_text.strip()
+                if value.startswith(":"):
+                    value = value[1:].strip()
+                # --------------------------------------------------
+
+                if value:
+                    add_to_record(record, json_key, value)
+
+            if record:
+                all_records.append({
+                    "source": current_source,
+                    "data": record
+                })
 
     return all_records
 
@@ -253,7 +268,7 @@ async def search(data: dict):
             if "temp_" in file_path:
                 os.remove(file_path)
             
-            # Return JSON Structure
+            # Record count format updated to match your exact JSON length
             return {
                 "status": True,
                 "query": message,
