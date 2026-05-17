@@ -144,8 +144,6 @@ def add_to_record(record: Dict, key: str, value: str):
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
-    # Changed "html.parser" to "lxml" for massive speed boost without changing logic
-    # Make sure to run: pip install lxml
     soup = BeautifulSoup(html_content, "lxml")
     all_records = []
     current_source = None
@@ -205,7 +203,7 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     return all_records
 
 # =========================
-# API ENDPOINTS (FAST POLLING)
+# API ENDPOINTS
 # =========================
 
 @app.post("/search")
@@ -219,7 +217,6 @@ async def search(data: dict):
         sent = await client.send_message(BOT_USERNAME, message)
         
         reply = None
-        # Fast Polling: Check every 0.5 seconds for bot's first reply (Max 10 seconds wait)
         for _ in range(20):
             messages = await client.get_messages(BOT_USERNAME, limit=5)
             for msg in messages:
@@ -236,25 +233,31 @@ async def search(data: dict):
         file_path = None
 
         if reply.buttons:
-            # Click the button instantly
-            for row in reply.buttons:
-                for btn in row:
-                    if DOWNLOAD_BUTTON.lower() in btn.text.lower():
-                        await btn.click()
-                        break
-                        
-            # Fast Polling for the File: Check every 0.5 seconds (Max 20 seconds wait)
-            for _ in range(40):
+            # --- YAHAN CHANGE KIYA GAYA HAI ---
+            # Loop max 130 baar chalega (approx 90 seconds tak try karega at 0.7s delay)
+            for attempt in range(130):
+                # 1. Button Click karo
+                for row in reply.buttons:
+                    for btn in row:
+                        if DOWNLOAD_BUTTON.lower() in btn.text.lower():
+                            await btn.click()
+                            break
+                
+                # 2. Thoda wait karo (0.7 seconds)
+                await asyncio.sleep(0.7)
+                
+                # 3. Check karo ki bot ne file bhej di hai ya nahi
                 latest = await client.get_messages(BOT_USERNAME, limit=5)
                 for msg in latest:
                     if msg.file and msg.id > reply.id:
                         file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
                         break
+                
+                # 4. Agar file mil gayi toh loop break kardo
                 if file_path:
                     break
-                await asyncio.sleep(0.5)
+            # ----------------------------------
 
-        # Handle direct HTML text response if file was not sent but text was
         if not file_path and reply.message:
             html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', reply.message, re.DOTALL | re.IGNORECASE)
             if html_match:
@@ -264,7 +267,6 @@ async def search(data: dict):
                     f.write(html_content)
                 file_path = temp_path
 
-        # Parse and return results instantly
         if file_path and os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 html_content = f.read()
