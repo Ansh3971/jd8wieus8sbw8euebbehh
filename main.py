@@ -63,7 +63,6 @@ async def shutdown():
 
 def get_json_key(field_tag: str) -> str:
     field_tag = field_tag.strip()
-    # Keys updated to exactly match your requested JSON output
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
         return "telephone"
     if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
@@ -141,17 +140,18 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# MAIN PARSER
+# MAIN PARSER (OPTIMIZED WITH lxml)
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
-    soup = BeautifulSoup(html_content, "html.parser")
+    # Changed "html.parser" to "lxml" for massive speed boost without changing logic
+    # Make sure to run: pip install lxml
+    soup = BeautifulSoup(html_content, "lxml")
     all_records = []
     current_source = None
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
-        # Get source title
         source = "Unknown"
         title_elem = block.find("div", class_="block-title")
         if title_elem:
@@ -164,8 +164,6 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
             continue
 
         html_text = str(text_elem)
-
-        # Split by double <br> tags
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
         for part in parts:
@@ -173,7 +171,7 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
             if not part or '<b>' not in part:
                 continue
 
-            soup_part = BeautifulSoup(part, "html.parser")
+            soup_part = BeautifulSoup(part, "lxml")
             record = {}
 
             for bold in soup_part.find_all("b"):
@@ -182,7 +180,6 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                 if not json_key:
                     continue
 
-                # --- FIX: Stop jumping to the wrong <code> tag ---
                 raw_text = ""
                 for sibling in bold.next_siblings:
                     if getattr(sibling, 'name', None) in ['b', 'br']:
@@ -195,7 +192,6 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                 value = raw_text.strip()
                 if value.startswith(":"):
                     value = value[1:].strip()
-                # --------------------------------------------------
 
                 if value:
                     add_to_record(record, json_key, value)
@@ -209,7 +205,7 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     return all_records
 
 # =========================
-# API ENDPOINTS
+# API ENDPOINTS (FAST POLLING)
 # =========================
 
 @app.post("/search")
@@ -221,29 +217,34 @@ async def search(data: dict):
 
         print(f"\n=== SEARCH: {message} ===")
         sent = await client.send_message(BOT_USERNAME, message)
-        await asyncio.sleep(3)
-
-        messages = await client.get_messages(BOT_USERNAME, limit=10)
+        
         reply = None
-        for msg in messages:
-            if not msg.out and msg.id > sent.id:
-                reply = msg
+        # Fast Polling: Check every 0.5 seconds for bot's first reply (Max 10 seconds wait)
+        for _ in range(20):
+            messages = await client.get_messages(BOT_USERNAME, limit=5)
+            for msg in messages:
+                if not msg.out and msg.id > sent.id:
+                    reply = msg
+                    break
+            if reply:
                 break
+            await asyncio.sleep(0.5)
+
         if not reply:
             return {"status": False, "error": "No response from bot"}
 
         file_path = None
 
         if reply.buttons:
+            # Click the button instantly
             for row in reply.buttons:
                 for btn in row:
                     if DOWNLOAD_BUTTON.lower() in btn.text.lower():
                         await btn.click()
                         break
-                if file_path:
-                    break
-            for _ in range(30):
-                await asyncio.sleep(2)
+                        
+            # Fast Polling for the File: Check every 0.5 seconds (Max 20 seconds wait)
+            for _ in range(40):
                 latest = await client.get_messages(BOT_USERNAME, limit=5)
                 for msg in latest:
                     if msg.file and msg.id > reply.id:
@@ -251,7 +252,9 @@ async def search(data: dict):
                         break
                 if file_path:
                     break
+                await asyncio.sleep(0.5)
 
+        # Handle direct HTML text response if file was not sent but text was
         if not file_path and reply.message:
             html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', reply.message, re.DOTALL | re.IGNORECASE)
             if html_match:
@@ -261,14 +264,16 @@ async def search(data: dict):
                     f.write(html_content)
                 file_path = temp_path
 
+        # Parse and return results instantly
         if file_path and os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 html_content = f.read()
+                
             records_data = parse_leakbase_html(html_content)
+            
             if "temp_" in file_path:
                 os.remove(file_path)
             
-            # Record count format updated to match your exact JSON length
             return {
                 "status": True,
                 "query": message,
@@ -276,7 +281,7 @@ async def search(data: dict):
                 "data": records_data
             }
 
-        return {"status": False, "error": "No file received"}
+        return {"status": False, "error": "No file received or download failed"}
 
     except Exception as e:
         print(f"ERROR: {str(e)}")
