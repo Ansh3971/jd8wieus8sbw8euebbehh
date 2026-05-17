@@ -15,10 +15,10 @@ from bs4 import BeautifulSoup
 
 load_dotenv()
 
-API_ID = int(os.getenv("API_ID", 12345))
-API_HASH = os.getenv("API_HASH", "your_api_hash")
-SESSION = os.getenv("SESSION", "your_session_string")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "@your_bot")
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+SESSION = os.getenv("SESSION")
+BOT_USERNAME = os.getenv("BOT_USERNAME")
 DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
 
 # =========================
@@ -75,7 +75,7 @@ def get_json_key(field_tag: str) -> str:
         return "full_name"
     if "👨The name of the father" in field_tag or "👨Father name" in field_tag:
         return "the_name_of_the_father"
-    if "🗺️Region" in field_tag or "🗺️ Location" in field_tag or "🗺️ Region" in field_tag:
+    if "🗺️Region" in field_tag or "🗺️Location" in field_tag or "🗺️ Region" in field_tag:
         return "region"
     if "👤Nick" in field_tag or "👤Nickname" in field_tag:
         return "nick"
@@ -126,14 +126,18 @@ def get_json_key(field_tag: str) -> str:
     return None
 
 def add_to_record(record: Dict, key: str, value: str):
-    # Safety Check: Intercept and redact 12-digit structural matches resembling private identity cards
-    if len(value) == 12 and value.isdigit():
-        value = "[ID_REDACTED]"
-        
-    if key in ["telephone", "email"]:
-        record[key] = value
+    if key == "address" and value.replace(" ", "").isdigit():
+        return
+    if key in ["phone", "email"]:
+        if key not in record:
+            record[key] = value
+    elif key in ["phones", "addresses", "emails"]:
+        record.setdefault(key, [])
+        if value not in record[key]:
+            record[key].append(value)
     else:
-        record[key] = value
+        if key not in record:
+            record[key] = value
 
 # =========================
 # MAIN PARSER (FIXED)
@@ -143,49 +147,48 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "html.parser")
     all_records = []
 
-    # Target each block container independently
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
-        # Extract source title cleanly
+        # Get source title
+        source = "Unknown"
         title_elem = block.find("div", class_="block-title")
-        source = title_elem.get_text(strip=True) if title_elem else "Unknown"
+        if title_elem:
+            source = title_elem.get_text(strip=True)
 
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
             continue
 
-        record_data = {}
-        
-        # Look for labels inside this block text explicitly
-        bold_tags = text_elem.find_all("b")
-        for bold in bold_tags:
+        record = {}
+        for bold in text_elem.find_all("b"):
             field_tag = bold.get_text(strip=True)
             json_key = get_json_key(field_tag)
             
-            # If the bold text is an actual field selector, extract its corresponding value
-            if json_key:
-                value = ""
-                # Scenario A: Value is contained inside an adjacent <code> wrapper
-                code_tag = bold.find_next_sibling("code")
-                if code_tag and (bold.next_sibling == code_tag or bold.next_element == code_tag):
-                    value = code_tag.get_text(strip=True)
-                else:
-                    # Scenario B: Value is raw text directly following the <b> tag
-                    next_sib = bold.next_sibling
-                    if next_sib and isinstance(next_sib, str):
-                        value = next_sib.strip()
-                
-                # Sanitize out leading colons or trailing space remnants
-                value = value.lstrip(":").strip()
-                
-                if value:
-                    add_to_record(record_data, json_key, value)
+            if not json_key:
+                continue
 
-        # Append structured entry matching your original response specifications
-        if record_data:
+            value = None
+            code_tag = bold.find_next_sibling("code")
+            
+            # Extract Value Correctly
+            if code_tag and bold.next_element == code_tag.previous_element:
+                value = code_tag.get_text(strip=True)
+            else:
+                next_sibling = bold.next_sibling
+                if next_sibling and isinstance(next_sibling, str):
+                    raw_text = next_sibling.strip()
+                    br_pos = raw_text.find('<br')
+                    if br_pos != -1:
+                        raw_text = raw_text[:br_pos]
+                    value = raw_text.lstrip(':').strip()
+
+            if value:
+                add_to_record(record, json_key, value)
+
+        if record:
             all_records.append({
                 "source": source,
-                "data": record_data
+                "data": record
             })
 
     return all_records
@@ -250,6 +253,7 @@ async def search(data: dict):
             if "temp_" in file_path:
                 os.remove(file_path)
             
+            # Return JSON Structure
             return {
                 "status": True,
                 "query": message,
@@ -261,6 +265,8 @@ async def search(data: dict):
 
     except Exception as e:
         print(f"ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"status": False, "error": str(e)}
 
 @app.get("/test")
