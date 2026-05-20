@@ -142,13 +142,12 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# MAIN PARSER
+# MAIN PARSER (GROUPED BY SOURCE)
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "lxml")
-    all_records = []
-    current_source = None
+    grouped_data = []
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
@@ -157,8 +156,6 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if title_elem:
             source = title_elem.get_text(strip=True)
 
-        current_source = source
-
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
             continue
@@ -166,6 +163,7 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         html_text = str(text_elem)
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
+        records_in_block = []
         for part in parts:
             part = part.strip()
             if not part or '<b>' not in part:
@@ -197,12 +195,20 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                     add_to_record(record, json_key, value)
 
             if record:
-                all_records.append({
-                    "source": current_source,
-                    "data": record
+                records_in_block.append(record)
+
+        if records_in_block:
+            # Check if this source already exists in our grouped list
+            existing_group = next((item for item in grouped_data if item["source"] == source), None)
+            if existing_group:
+                existing_group["records"].extend(records_in_block)
+            else:
+                grouped_data.append({
+                    "source": source,
+                    "records": records_in_block
                 })
 
-    return all_records
+    return grouped_data
 
 # =========================
 # API ENDPOINTS
@@ -261,10 +267,10 @@ async def search(data: dict):
             os.remove(file_path)
 
         if html_content:
-            records_data = parse_leakbase_html(html_content)
+            grouped_records = parse_leakbase_html(html_content)
             
-            main_source = records_data[0]["source"] if records_data else "Unknown"
-            clean_data = [item["data"] for item in records_data]
+            # Count total records inside all source groups
+            total_records = sum(len(group["records"]) for group in grouped_records)
 
             # Calculate Response Time & IST Timestamp
             process_time = round(time.time() - start_time, 2)
@@ -274,9 +280,8 @@ async def search(data: dict):
             return {
                 "status": True,
                 "query": message,
-                "record_count": len(clean_data),
-                "source": main_source,
-                "data": clean_data,
+                "record_count": total_records,
+                "data": grouped_records,
                 "response_time": f"{process_time}s",
                 "api_status": "Active",
                 "indian_time_stamp": indian_time
