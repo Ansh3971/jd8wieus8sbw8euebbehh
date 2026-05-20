@@ -140,52 +140,69 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# MAIN PARSER (HIGH SPEED OPTIMIZATION)
+# MAIN PARSER (RESTORED OLD LOGIC)
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "lxml")
     all_records = []
+    current_source = None
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
+        # Get source title
         source = "Unknown"
         title_elem = block.find("div", class_="block-title")
         if title_elem:
             source = title_elem.get_text(strip=True)
 
+        current_source = source
+
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
             continue
 
-        record = {}
-        for bold in text_elem.find_all("b"):
-            field_tag = bold.get_text(strip=True)
-            json_key = get_json_key(field_tag)
-            if not json_key:
+        html_text = str(text_elem)
+
+        # --- YAHAN PEHLE WALA SPLIT LOGIC WAPAS LA DIYA HAI ---
+        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
+
+        for part in parts:
+            part = part.strip()
+            if not part or '<b>' not in part:
                 continue
 
-            raw_text = ""
-            for sibling in bold.next_siblings:
-                if getattr(sibling, 'name', None) in ['b', 'br']:
-                    break
-                if getattr(sibling, 'name', None) == 'code':
-                    raw_text += sibling.get_text(strip=True)
-                elif isinstance(sibling, str):
-                    raw_text += sibling
-            
-            value = raw_text.strip()
-            if value.startswith(":"):
-                value = value[1:].strip()
+            soup_part = BeautifulSoup(part, "lxml")
+            record = {}
 
-            if value:
-                add_to_record(record, json_key, value)
+            for bold in soup_part.find_all("b"):
+                field_tag = bold.get_text(strip=True)
+                json_key = get_json_key(field_tag)
+                if not json_key:
+                    continue
 
-        if record:
-            all_records.append({
-                "source": source,
-                "data": record
-            })
+                raw_text = ""
+                for sibling in bold.next_siblings:
+                    if getattr(sibling, 'name', None) in ['b', 'br']:
+                        break
+                    if getattr(sibling, 'name', None) == 'code':
+                        raw_text += sibling.get_text(strip=True)
+                    elif isinstance(sibling, str):
+                        raw_text += sibling
+                
+                value = raw_text.strip()
+                if value.startswith(":"):
+                    value = value[1:].strip()
+
+                if value:
+                    add_to_record(record, json_key, value)
+
+            if record:
+                all_records.append({
+                    "source": current_source,
+                    "data": record
+                })
+        # --------------------------------------------------------
 
     return all_records
 
