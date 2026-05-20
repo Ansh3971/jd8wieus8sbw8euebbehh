@@ -140,13 +140,13 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# MAIN PARSER (OPTIMIZED WITH lxml)
+# MAIN PARSER (HIGH SPEED OPTIMIZATION)
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
+    # Pure HTML string ko sirf ek baar parse karke memory footprint kam kiya hai
     soup = BeautifulSoup(html_content, "lxml")
     all_records = []
-    current_source = None
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
@@ -155,55 +155,44 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         if title_elem:
             source = title_elem.get_text(strip=True)
 
-        current_source = source
-
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
             continue
 
-        html_text = str(text_elem)
-        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
-
-        for part in parts:
-            part = part.strip()
-            if not part or '<b>' not in part:
+        record = {}
+        # Multi-soup tree re-generation hatakar direct extraction lagayi hai taaki microsecond me processing ho
+        for bold in text_elem.find_all("b"):
+            field_tag = bold.get_text(strip=True)
+            json_key = get_json_key(field_tag)
+            if not json_key:
                 continue
 
-            soup_part = BeautifulSoup(part, "lxml")
-            record = {}
+            raw_text = ""
+            for sibling in bold.next_siblings:
+                if getattr(sibling, 'name', None) in ['b', 'br']:
+                    break
+                if getattr(sibling, 'name', None) == 'code':
+                    raw_text += sibling.get_text(strip=True)
+                elif isinstance(sibling, str):
+                    raw_text += sibling
+            
+            value = raw_text.strip()
+            if value.startswith(":"):
+                value = value[1:].strip()
 
-            for bold in soup_part.find_all("b"):
-                field_tag = bold.get_text(strip=True)
-                json_key = get_json_key(field_tag)
-                if not json_key:
-                    continue
+            if value:
+                add_to_record(record, json_key, value)
 
-                raw_text = ""
-                for sibling in bold.next_siblings:
-                    if getattr(sibling, 'name', None) in ['b', 'br']:
-                        break
-                    if getattr(sibling, 'name', None) == 'code':
-                        raw_text += sibling.get_text(strip=True)
-                    elif isinstance(sibling, str):
-                        raw_text += sibling
-                
-                value = raw_text.strip()
-                if value.startswith(":"):
-                    value = value[1:].strip()
-
-                if value:
-                    add_to_record(record, json_key, value)
-
-            if record:
-                all_records.append({
-                    "source": current_source,
-                    "data": record
-                })
+        if record:
+            all_records.append({
+                "source": source,
+                "data": record
+            })
 
     return all_records
 
 # =========================
-# API ENDPOINTS
+# API ENDPOINTS (ULTRA-FAST POLLING)
 # =========================
 
 @app.post("/search")
@@ -217,7 +206,8 @@ async def search(data: dict):
         sent = await client.send_message(BOT_USERNAME, message)
         
         reply = None
-        for _ in range(20):
+        # Fast Response Fetcher: Check every 0.1s instead of 0.5s for zero lag response
+        for _ in range(100):
             messages = await client.get_messages(BOT_USERNAME, limit=5)
             for msg in messages:
                 if not msg.out and msg.id > sent.id:
@@ -225,7 +215,7 @@ async def search(data: dict):
                     break
             if reply:
                 break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
 
         if not reply:
             return {"status": False, "error": "No response from bot"}
@@ -233,30 +223,24 @@ async def search(data: dict):
         file_path = None
 
         if reply.buttons:
-            # --- YAHAN CHANGE KIYA GAYA HAI ---
-            # Loop max 130 baar chalega (approx 90 seconds tak try karega at 0.7s delay)
-            for attempt in range(130):
-                # 1. Button Click karo
+            # Button trigger execution loop with tight 0.1s intervals
+            for attempt in range(600):  # Maximum up to 60 seconds
                 for row in reply.buttons:
                     for btn in row:
                         if DOWNLOAD_BUTTON.lower() in btn.text.lower():
                             await btn.click()
                             break
                 
-                # 2. Thoda wait karo (0.7 seconds)
-                await asyncio.sleep(0.7)
+                await asyncio.sleep(0.1)
                 
-                # 3. Check karo ki bot ne file bhej di hai ya nahi
+                # Check directly if document object hit the server incoming buffer
                 latest = await client.get_messages(BOT_USERNAME, limit=5)
                 for msg in latest:
                     if msg.file and msg.id > reply.id:
                         file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
                         break
-                
-                # 4. Agar file mil gayi toh loop break kardo
                 if file_path:
                     break
-            # ----------------------------------
 
         if not file_path and reply.message:
             html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', reply.message, re.DOTALL | re.IGNORECASE)
