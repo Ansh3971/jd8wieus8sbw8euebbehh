@@ -1,6 +1,8 @@
 import os
 import re
+import time
 import asyncio
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -140,7 +142,7 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# MAIN PARSER (RESTORED OLD LOGIC)
+# MAIN PARSER
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
@@ -150,7 +152,6 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
-        # Get source title
         source = "Unknown"
         title_elem = block.find("div", class_="block-title")
         if title_elem:
@@ -163,8 +164,6 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
             continue
 
         html_text = str(text_elem)
-
-        # --- YAHAN PEHLE WALA SPLIT LOGIC WAPAS LA DIYA HAI ---
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
         for part in parts:
@@ -202,16 +201,16 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                     "source": current_source,
                     "data": record
                 })
-        # --------------------------------------------------------
 
     return all_records
 
 # =========================
-# API ENDPOINTS (ULTRA-FAST POLLING FIXED)
+# API ENDPOINTS
 # =========================
 
 @app.post("/search")
 async def search(data: dict):
+    start_time = time.time()  # Start timer here
     try:
         message = data.get("message", "")
         if not message:
@@ -224,28 +223,23 @@ async def search(data: dict):
         html_content = None
         button_clicked = False
         
-        # Continuous ultra-fast scanning loop (Wait up to 60 seconds total)
         for attempt in range(300): # 300 * 0.2s = 60 seconds
             messages = await client.get_messages(BOT_USERNAME, limit=5)
             
             for msg in messages:
-                # Ignore our own message or old messages
                 if msg.out or msg.id <= sent.id:
                     continue
                 
-                # Check 1: Did we get the actual file?
                 if msg.file:
                     file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
                     break
                 
-                # Check 2: Did the bot send the HTML raw text instead of a file?
                 if msg.message and not file_path:
                     html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', msg.message, re.DOTALL | re.IGNORECASE)
                     if html_match:
                         html_content = html_match.group(0)
                         break
 
-                # Check 3: Is there a button? Click it ONLY ONCE.
                 if msg.buttons and not button_clicked:
                     for row in msg.buttons:
                         for btn in row:
@@ -256,28 +250,36 @@ async def search(data: dict):
                         if button_clicked:
                             break
 
-            # If we successfully grabbed the file or HTML text, STOP the loop immediately
             if file_path or html_content:
                 break
                 
-            # Wait 0.2 seconds before checking again (Ultra-fast but safe from rate-limits)
             await asyncio.sleep(0.2)
 
-        # Process the downloaded file if it exists
         if file_path and os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 html_content = f.read()
-            # Clean up the file to save server space
             os.remove(file_path)
 
-        # If we successfully captured the HTML data (either from file or text)
         if html_content:
             records_data = parse_leakbase_html(html_content)
+            
+            main_source = records_data[0]["source"] if records_data else "Unknown"
+            clean_data = [item["data"] for item in records_data]
+
+            # Calculate Response Time & IST Timestamp
+            process_time = round(time.time() - start_time, 2)
+            ist = timezone(timedelta(hours=5, minutes=30))
+            indian_time = datetime.now(ist).strftime("%Y-%m-%d %I:%M:%S %p IST")
+
             return {
                 "status": True,
                 "query": message,
-                "record_count": len(records_data),
-                "data": records_data
+                "record_count": len(clean_data),
+                "source": main_source,
+                "data": clean_data,
+                "response_time": f"{process_time}s",
+                "api_status": "Active",
+                "indian_time_stamp": indian_time
             }
 
         return {"status": False, "error": "No file received or download failed"}
