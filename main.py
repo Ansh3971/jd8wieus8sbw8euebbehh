@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from bs4 import BeautifulSoup
-import concurrent.futures
 
 # =========================
 # LOAD ENV
@@ -59,39 +58,71 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING (OPTIMIZED WITH DICT)
+# FIELD MAPPING
 # =========================
 
-FIELD_MAP = {
-    "📞Telephone": "telephone", "📞Phone": "telephone", "📞Mobile": "telephone",
-    "🏘️Adres": "adres", "🏘️Address": "adres",
-    "📩Email": "email", "📩E-mail": "email",
-    "🃏Document number": "document_number", "🃏Document No": "document_number",
-    "👤Full name": "full_name", "👤Name": "full_name",
-    "👨The name of the father": "the_name_of_the_father", "👨Father name": "the_name_of_the_father",
-    "🗺️Region": "region", "🗺️Location": "region", "🗺️ Region": "region",
-    "👤Nick": "nick", "👤Nickname": "nick",
-    "📖Passport number": "passport_number",
-    "🔐Encrypted password": "encrypted_password",
-    "🔑Password": "password",
-    "📆Date": "the_date_of_registration", "📆The date of registration": "the_date_of_registration",
-    "📆Last activity": "last_activity",
-    "🎂Date of birth": "dob",
-    "🌃City": "city", "🇺🇸Stat": "state",
-    "🏤Postal code": "postal_code",
-    "🎯IP": "ip", "🚻Gender": "gender",
-    "👴Age": "age", "📍District": "district",
-    "🔗Link": "link", "🏷️ login": "login",
-    "📰Category": "category", "🗾Country": "country",
-    "⬆Level": "level", "🏫Education": "education",
-    "👤Surname": "surname", "💶Currency": "currency",
-    "💸Sum": "sum"
-}
-
 def get_json_key(field_tag: str) -> str:
-    for key, value in FIELD_MAP.items():
-        if key in field_tag:
-            return value
+    field_tag = field_tag.strip()
+    if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
+        return "telephone"
+    if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
+        return "adres"
+    if "📩Email" in field_tag or "📩E-mail" in field_tag:
+        return "email"
+    if "🃏Document number" in field_tag or "🃏Document No" in field_tag:
+        return "document_number"
+    if "👤Full name" in field_tag or "👤Name" in field_tag:
+        return "full_name"
+    if "👨The name of the father" in field_tag or "👨Father name" in field_tag:
+        return "the_name_of_the_father"
+    if "🗺️Region" in field_tag or "🗺️Location" in field_tag or "🗺️ Region" in field_tag:
+        return "region"
+    if "👤Nick" in field_tag or "👤Nickname" in field_tag:
+        return "nick"
+    if "📖Passport number" in field_tag:
+        return "passport_number"
+    if "🔐Encrypted password" in field_tag:
+        return "encrypted_password"
+    if "🔑Password" in field_tag:
+        return "password"
+    if "📆Date" in field_tag or "📆The date of registration" in field_tag:
+        return "the_date_of_registration"
+    if "📆Last activity" in field_tag:
+        return "last_activity"
+    if "🎂Date of birth" in field_tag:
+        return "dob"
+    if "🌃City" in field_tag:
+        return "city"
+    if "🇺🇸Stat" in field_tag:
+        return "state"
+    if "🏤Postal code" in field_tag:
+        return "postal_code"
+    if "🎯IP" in field_tag:
+        return "ip"
+    if "🚻Gender" in field_tag:
+        return "gender"
+    if "👴Age" in field_tag:
+        return "age"
+    if "📍District" in field_tag:
+        return "district"
+    if "🔗Link" in field_tag:
+        return "link"
+    if "🏷️ login" in field_tag:
+        return "login"
+    if "📰Category" in field_tag:
+        return "category"
+    if "🗾Country" in field_tag:
+        return "country"
+    if "⬆Level" in field_tag:
+        return "level"
+    if "🏫Education" in field_tag:
+        return "education"
+    if "👤Surname" in field_tag:
+        return "surname"
+    if "💶Currency" in field_tag:
+        return "currency"
+    if "💸Sum" in field_tag:
+        return "sum"
     return None
 
 def add_to_record(record: Dict, key: str, value: str):
@@ -109,177 +140,130 @@ def add_to_record(record: Dict, key: str, value: str):
             record[key] = value
 
 # =========================
-# FAST PARSER - OPTIMIZED
+# MAIN PARSER (HIGH SPEED OPTIMIZATION)
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "lxml")
     all_records = []
-    
+
     blocks = soup.find_all("div", class_="block")
-    
     for block in blocks:
-        # Get source title
+        source = "Unknown"
         title_elem = block.find("div", class_="block-title")
-        source = title_elem.get_text(strip=True) if title_elem else "Unknown"
-        
+        if title_elem:
+            source = title_elem.get_text(strip=True)
+
         text_elem = block.find("div", class_="block-text")
         if not text_elem:
             continue
-        
-        # Fast split using regex
-        html_text = str(text_elem)
-        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
-        
-        for part in parts:
-            part = part.strip()
-            if not part or '<b>' not in part:
+
+        record = {}
+        for bold in text_elem.find_all("b"):
+            field_tag = bold.get_text(strip=True)
+            json_key = get_json_key(field_tag)
+            if not json_key:
                 continue
+
+            raw_text = ""
+            for sibling in bold.next_siblings:
+                if getattr(sibling, 'name', None) in ['b', 'br']:
+                    break
+                if getattr(sibling, 'name', None) == 'code':
+                    raw_text += sibling.get_text(strip=True)
+                elif isinstance(sibling, str):
+                    raw_text += sibling
             
-            # Skip description
-            if len(part) > 300 and '📞' not in part and '📩' not in part:
-                continue
-            
-            record = {}
-            
-            # Fast extraction using regex instead of BeautifulSoup for each part
-            # Pattern 1: <b>FIELD</b> <code>VALUE</code>
-            pattern1 = re.compile(r'<b>(.+?)</b>\s*<code>(.*?)</code>', re.DOTALL)
-            matches1 = pattern1.findall(part)
-            
-            for field_raw, value in matches1:
-                json_key = get_json_key(field_raw)
-                if json_key:
-                    value_clean = re.sub(r'<[^>]+>', '', value).strip()
-                    if value_clean:
-                        add_to_record(record, json_key, value_clean)
-            
-            # Pattern 2: <b>FIELD</b> VALUE (without code tag)
-            pattern2 = re.compile(r'<b>(.+?)</b>\s*([^<]+?)(?=<br|<b|$)', re.DOTALL)
-            matches2 = pattern2.findall(part)
-            
-            for field_raw, value in matches2:
-                json_key = get_json_key(field_raw)
-                if json_key and json_key not in record:
-                    value_clean = value.strip()
-                    value_clean = re.sub(r'<[^>]+>', '', value_clean)
-                    value_clean = value_clean.strip()
-                    if value_clean:
-                        add_to_record(record, json_key, value_clean)
-            
-            if record:
-                all_records.append({
-                    "source": source,
-                    "data": record
-                })
-    
+            value = raw_text.strip()
+            if value.startswith(":"):
+                value = value[1:].strip()
+
+            if value:
+                add_to_record(record, json_key, value)
+
+        if record:
+            all_records.append({
+                "source": source,
+                "data": record
+            })
+
     return all_records
 
 # =========================
-# FAST DOWNLOAD WITH CONTINUOUS LOOP
-# =========================
-
-async def download_file_with_loop(reply, sent_message_id):
-    """Keep clicking download button and checking for file until found"""
-    file_path = None
-    
-    # Click button instantly
-    if reply.buttons:
-        for row in reply.buttons:
-            for btn in row:
-                if DOWNLOAD_BUTTON.lower() in btn.text.lower():
-                    await btn.click()
-                    print("Button clicked")
-                    break
-            if file_path:
-                break
-    
-    # Fast polling for file - check every 0.3 seconds
-    for attempt in range(40):
-        await asyncio.sleep(0.3)
-        try:
-            latest = await client.get_messages(BOT_USERNAME, limit=3)
-            for msg in latest:
-                if msg.file and msg.id > sent_message_id:
-                    file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
-                    print(f"File found and downloaded: {file_path}")
-                    return file_path
-        except Exception as e:
-            print(f"Error checking messages: {e}")
-    
-    return None
-
-# =========================
-# API ENDPOINTS (OPTIMIZED)
+# API ENDPOINTS (ULTRA-FAST POLLING FIXED)
 # =========================
 
 @app.post("/search")
 async def search(data: dict):
     try:
-        start_time = asyncio.get_event_loop().time()
         message = data.get("message", "")
         if not message:
             return {"status": False, "error": "message required"}
 
         print(f"\n=== SEARCH: {message} ===")
-        
-        # Send message
         sent = await client.send_message(BOT_USERNAME, message)
-        sent_message_id = sent.id
-        print(f"Message sent (ID: {sent_message_id})")
-
-        # Fast polling for reply - check every 0.3 seconds
-        reply = None
-        for attempt in range(20):
-            await asyncio.sleep(0.3)
-            messages = await client.get_messages(BOT_USERNAME, limit=3)
+        
+        file_path = None
+        html_content = None
+        button_clicked = False
+        
+        # Continuous ultra-fast scanning loop (Wait up to 60 seconds total)
+        for attempt in range(300): # 300 * 0.2s = 60 seconds
+            messages = await client.get_messages(BOT_USERNAME, limit=5)
+            
             for msg in messages:
-                if not msg.out and msg.id > sent_message_id and msg.message:
-                    reply = msg
-                    print(f"Reply found (ID: {reply.id})")
+                # Ignore our own message or old messages
+                if msg.out or msg.id <= sent.id:
+                    continue
+                
+                # Check 1: Did we get the actual file?
+                if msg.file:
+                    file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
                     break
-            if reply:
+                
+                # Check 2: Did the bot send the HTML raw text instead of a file?
+                if msg.message and not file_path:
+                    html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', msg.message, re.DOTALL | re.IGNORECASE)
+                    if html_match:
+                        html_content = html_match.group(0)
+                        break
+
+                # Check 3: Is there a button? Click it ONLY ONCE.
+                if msg.buttons and not button_clicked:
+                    for row in msg.buttons:
+                        for btn in row:
+                            if DOWNLOAD_BUTTON.lower() in btn.text.lower():
+                                await btn.click()
+                                button_clicked = True
+                                break
+                        if button_clicked:
+                            break
+
+            # If we successfully grabbed the file or HTML text, STOP the loop immediately
+            if file_path or html_content:
                 break
-        
-        if not reply:
-            return {"status": False, "error": "No response from bot"}
-        
-        print(f"Reply received in {asyncio.get_event_loop().time() - start_time:.2f}s")
+                
+            # Wait 0.2 seconds before checking again (Ultra-fast but safe from rate-limits)
+            await asyncio.sleep(0.2)
 
-        # Download file
-        file_path = await download_file_with_loop(reply, sent_message_id)
-        
-        if not file_path:
-            return {"status": False, "error": "No file received after multiple attempts"}
-        
-        print(f"File downloaded in {asyncio.get_event_loop().time() - start_time:.2f}s")
+        # Process the downloaded file if it exists
+        if file_path and os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                html_content = f.read()
+            # Clean up the file to save server space
+            os.remove(file_path)
 
-        # Parse HTML in thread pool to avoid blocking
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            html_content = f.read()
-        
-        # Use thread pool for CPU-intensive parsing
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            records_data = await loop.run_in_executor(pool, parse_leakbase_html, html_content)
-        
-        # Clean up temp file
-        if "temp_" in str(file_path):
-            try:
-                os.remove(file_path)
-            except:
-                pass
-        
-        total_time = asyncio.get_event_loop().time() - start_time
-        total_records = len(records_data)
-        print(f"Total time: {total_time:.2f}s | Records: {total_records}")
-        
-        return {
-            "status": True,
-            "query": message,
-            "record_count": total_records,
-            "data": records_data
-        }
+        # If we successfully captured the HTML data (either from file or text)
+        if html_content:
+            records_data = parse_leakbase_html(html_content)
+            return {
+                "status": True,
+                "query": message,
+                "record_count": len(records_data),
+                "data": records_data
+            }
+
+        return {"status": False, "error": "No file received or download failed"}
 
     except Exception as e:
         print(f"ERROR: {str(e)}")
@@ -304,6 +288,8 @@ async def home():
                 input { width: 70%; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
                 button { padding: 12px 24px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
                 button:hover { background: #0056b3; }
+                pre { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
+                .result { margin-top: 20px; }
             </style>
         </head>
         <body>
@@ -319,7 +305,3 @@ async def home():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-# =========================
-# RUN: uvicorn main:app --host 0.0.0.0 --port 8000
-# =========================
