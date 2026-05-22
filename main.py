@@ -65,24 +65,26 @@ async def shutdown():
 
 def get_json_key(field_tag: str) -> str:
     field_tag = field_tag.strip()
+    
+    # Telephone ko Phone kar diya
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
-        return "telephone"
+        return "phone"
+        
+    # Adres ki spelling sahi karke Address kar di
     if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
-        return "adres"
+        return "address"
+        
     if "📩Email" in field_tag or "📩E-mail" in field_tag:
         return "email"
     if "🃏Document number" in field_tag or "🃏Document No" in field_tag:
         return "document_number"
         
-    # ==========================================
-    # YAHAN PAR NAME AUR FATHER NAME EXCHANGE KIYA HAI
-    # ==========================================
+    # Name aur Father Name ka exchange (Pehle wala fix)
     if "👤Full name" in field_tag or "👤Name" in field_tag:
         return "the_name_of_the_father"
     if "👨The name of the father" in field_tag or "👨Father name" in field_tag:
         return "full_name"
-    # ==========================================
-    
+        
     if "🗺️Region" in field_tag or "🗺️Location" in field_tag or "🗺️ Region" in field_tag:
         return "region"
     if "👤Nick" in field_tag or "👤Nickname" in field_tag:
