@@ -4,13 +4,15 @@ import asyncio
 import time
 import random
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any
+
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, HTMLResponse
-from dotenv import load_dotenv
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from bs4 import BeautifulSoup
+
+from dotenv import load_dotenv
 
 # =========================
 # LOAD ENV
@@ -18,17 +20,18 @@ from bs4 import BeautifulSoup
 
 load_dotenv()
 
-API_ID = int(os.getenv("API_ID", 12345))
-API_HASH = os.getenv("API_HASH", "your_api_hash")
-SESSION = os.getenv("SESSION", "your_session_string")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "your_bot")
-DOWNLOAD_BUTTON = os.getenv("DOWNLOAD_BUTTON", "Download")
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+SESSION = os.getenv("SESSION")
+BOT_USERNAME = os.getenv("BOT_USERNAME")
 
 # =========================
 # FASTAPI
 # =========================
 
-app = FastAPI(title="Telegram LeakBase Parser API")
+app = FastAPI(
+    title="Telegram Bot API"
+)
 
 # =========================
 # TELEGRAM CLIENT
@@ -41,169 +44,188 @@ client = TelegramClient(
 )
 
 # =========================
-# DOWNLOAD FOLDER
+# REQUEST MODEL
 # =========================
 
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+class Query(BaseModel):
+    message: str
 
 # =========================
-# STARTUP & SHUTDOWN
+# STARTUP
 # =========================
 
 @app.on_event("startup")
 async def startup():
     await client.start()
-    print("Telegram Client Started")
+    print("Telegram Client Connected")
+
+# =========================
+# SHUTDOWN
+# =========================
 
 @app.on_event("shutdown")
 async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING (SPELLING FIXED & SWAPPED)
+# CLEAN KEY
 # =========================
 
-def get_json_key(field_tag: str) -> str:
-    field_tag = field_tag.strip()
-    if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
-        return "Phone"
-    if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
-        return "Address"
-    if "📩Email" in field_tag or "📩E-mail" in field_tag:
-        return "Email"
-    if "🃏Document number" in field_tag or "🃏Document No" in field_tag:
-        return "DocumentNumber"
-    
-    # --- EXCHANGE LOGIC APPLIED HERE ---
-    if "👤Full name" in field_tag or "👤Name" in field_tag:
-        return "FatherName"
-    if "👨The name of the father" in field_tag or "👨Father name" in field_tag:
-        return "FullName"
-    # -----------------------------------
-    
-    if "🗺️Region" in field_tag or "🗺️Location" in field_tag or "🗺️ Region" in field_tag:
-        return "Region"
-    if "👤Nick" in field_tag or "👤Nickname" in field_tag:
-        return "Nick"
-    if "📖Passport number" in field_tag:
-        return "PassportNumber"
-    if "🔐Encrypted password" in field_tag:
-        return "EncryptedPassword"
-    if "🔑Password" in field_tag:
-        return "Password"
-    if "📆Date" in field_tag or "📆The date of registration" in field_tag:
-        return "RegistrationDate"
-    if "📆Last activity" in field_tag:
-        return "LastActivity"
-    if "🎂Date of birth" in field_tag:
-        return "DOB"
-    if "🌃City" in field_tag:
-        return "City"
-    if "🇺🇸Stat" in field_tag:
-        return "State"
-    if "🏤Postal code" in field_tag:
-        return "PostalCode"
-    if "🎯IP" in field_tag:
-        return "IP"
-    if "🚻Gender" in field_tag:
-        return "Gender"
-    if "👴Age" in field_tag:
-        return "Age"
-    if "📍District" in field_tag:
-        return "District"
-    if "🔗Link" in field_tag:
-        return "Link"
-    if "🏷️ login" in field_tag:
-        return "Login"
-    if "📰Category" in field_tag:
-        return "Category"
-    if "🗾Country" in field_tag:
-        return "Country"
-    if "⬆Level" in field_tag:
-        return "Level"
-    if "🏫Education" in field_tag:
-        return "Education"
-    if "👤Surname" in field_tag:
-        return "Surname"
-    if "💶Currency" in field_tag:
-        return "Currency"
-    if "💸Sum" in field_tag:
-        return "Sum"
-    return None
-
-def add_to_record(record: Dict, key: str, value: str):
-    if key == "Address" and value.replace(" ", "").isdigit():
-        return
-    
-    # Handle multiple phones/addresses properly (e.g. Phone, Phone2, Phone3)
-    if key in record:
-        count = 2
-        while f"{key}{count}" in record:
-            count += 1
-        record[f"{key}{count}"] = value
-    else:
-        record[key] = value
+def clean_key(key):
+    key = re.sub(r'[^\w\s]', '', key)
+    key = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', key)
+    key = key.strip()
+    words = key.split()
+    return ' '.join(word.capitalize() for word in words)
 
 # =========================
-# MAIN PARSER (FLAT CLEAN ARRAY)
+# GET FIELD NAME (SPELLING & SWAP FIXED)
 # =========================
 
-def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
-    soup = BeautifulSoup(html_content, "lxml")
-    all_records = []
+def get_field_name(raw_key):
+    name = re.sub(r'[\U00010000-\U0010FFFF\u2600-\u27BF]', '', raw_key)
+    name = name.strip()
+    name = clean_key(name)
+    
+    mapping = {
+        "Email": "Email",
+        "Telephone": "Phone",
+        "Phone": "Phone",
+        "Adres": "Address",        # Fixed Spelling
+        "Address": "Address",
+        "Document number": "DocumentNumber",
+        "Document": "DocumentNumber",
+        "Full name": "FatherName",       # Exchanged
+        "Fullname": "FatherName",        # Exchanged
+        "The name of the father": "FullName", # Exchanged
+        "Father name": "FullName",            # Exchanged
+        "Region": "Region",
+        "Nick": "Nick",
+        "Nickname": "Nick"
+    }
+    
+    for key, value in mapping.items():
+        if key.lower() in name.lower():
+            return value
+    
+    return name.replace(" ", "")
 
-    blocks = soup.find_all("div", class_="block")
-    for block in blocks:
-        source = "Unknown"
-        title_elem = block.find("div", class_="block-title")
-        if title_elem:
-            source = title_elem.get_text(strip=True)
+# =========================
+# PARSE VALUE FROM LINE
+# =========================
 
-        text_elem = block.find("div", class_="block-text")
-        if not text_elem:
+def parse_line(line):
+    line = line.strip()
+
+    if not line:
+        return None, None
+
+    emoji_pattern = re.compile(
+        r'^([\U00010000-\U0010FFFF\u2600-\u27BF]+)\s*(.+?):\s*(.*)$'
+    )
+
+    match = emoji_pattern.match(line)
+
+    if match:
+        key_raw = match.group(2)
+        value = match.group(3).strip()
+
+        field_name = get_field_name(key_raw)
+
+        return field_name, value
+
+    if line.startswith('📞'):
+        phone_match = re.search(r'(\d+)', line)
+
+        if phone_match:
+            return "Phone", phone_match.group(1)
+
+    if line.startswith('📩'):
+        email_match = re.search(
+            r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})',
+            line
+        )
+
+        if email_match:
+            return "Email", email_match.group(1)
+
+    return None, None
+
+# =========================
+# MAIN PARSER (CLEAN LIST ONLY)
+# =========================
+
+def parse_message(text):
+    if not text:
+        return []
+
+    # Remove truncation message
+    if "Some data did not fit this message" in text:
+        text = text.split("Some data did not fit this message")[0]
+
+    lines = text.splitlines()
+
+    # Skip title + description automatically
+    data_start_idx = 0
+
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if re.match(r'^[📩📞🏘️🃏👤👨🗺️]', line):
+            data_start_idx = i
+            break
+
+    records = []
+    current_record = {}
+
+    i = data_start_idx
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Empty line = new record
+        if not line:
+            if current_record:
+                records.append(current_record)
+                current_record = {}
+            i += 1
             continue
 
-        html_text = str(text_elem)
-        parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
+        # Stop on truncation note
+        if "Some data did not fit this message" in line:
+            break
 
-        for part in parts:
-            part = part.strip()
-            if not part or '<b>' not in part:
-                continue
+        field_name, value = parse_line(line)
 
-            soup_part = BeautifulSoup(part, "lxml")
-            
-            # Start fresh record with Source at the top of the object
-            record = {"Source": source}
+        if field_name and value:
+            # Duplicate fields logic (Phone2, Address2 etc)
+            if field_name in current_record:
+                count = 2
+                while f"{field_name}{count}" in current_record:
+                    count += 1
+                current_record[f"{field_name}{count}"] = value
+            else:
+                current_record[field_name] = value
 
-            for bold in soup_part.find_all("b"):
-                field_tag = bold.get_text(strip=True)
-                json_key = get_json_key(field_tag)
-                if not json_key:
-                    continue
+        else:
+            # Multiline support
+            if current_record and line:
+                if "Address" in current_record:
+                    current_record["Address"] += " " + line
+                else:
+                    last_key = list(current_record.keys())[-1]
+                    current_record[last_key] += " " + line
 
-                raw_text = ""
-                for sibling in bold.next_siblings:
-                    if getattr(sibling, 'name', None) in ['b', 'br']:
-                        break
-                    if getattr(sibling, 'name', None) == 'code':
-                        raw_text += sibling.get_text(strip=True)
-                    elif isinstance(sibling, str):
-                        raw_text += sibling
-                
-                value = raw_text.strip()
-                if value.startswith(":"):
-                    value = value[1:].strip()
+        i += 1
 
-                if value:
-                    add_to_record(record, json_key, value)
+    # Last record
+    if current_record:
+        records.append(current_record)
 
-            # Check if record has more data besides just "Source"
-            if len(record) > 1:
-                all_records.append(record)
+    # Remove empty records
+    records = [r for r in records if r]
 
-    return all_records
+    # Return clean list directly (No "source1")
+    return records
 
 # =========================
 # DYNAMIC WATERMARK
@@ -215,138 +237,132 @@ def get_dynamic_watermark():
     return random.choice(keys), random.choice(values)
 
 # =========================
-# API ENDPOINTS
+# MAIN SEARCH
 # =========================
 
 @app.post("/search")
-async def search(data: dict):
+async def search(data: Query):
     start_time = time.time()
+
     try:
-        message = data.get("message", "")
-        if not message:
-            return JSONResponse(content={"status": False, "error": "message required"})
+        print("\n========== NEW REQUEST ==========")
+        print("Query:", data.message)
 
-        print(f"\n=== SEARCH: {message} ===")
-        sent = await client.send_message(BOT_USERNAME, message)
-        
-        file_path = None
-        html_content = None
-        button_clicked = False
-        
-        # High speed polling
-        for attempt in range(300):
-            messages = await client.get_messages(BOT_USERNAME, limit=5)
-            
-            for msg in messages:
-                if msg.out or msg.id <= sent.id:
-                    continue
-                
-                if msg.file:
-                    file_path = await client.download_media(msg, file=DOWNLOAD_DIR)
-                    break
-                
-                if msg.message and not file_path:
-                    html_match = re.search(r'(<!DOCTYPE html>|<html>.*?</html>)', msg.message, re.DOTALL | re.IGNORECASE)
-                    if html_match:
-                        html_content = html_match.group(0)
-                        break
+        sent = await client.send_message(
+            BOT_USERNAME,
+            data.message
+        )
 
-                if msg.buttons and not button_clicked:
-                    for row in msg.buttons:
-                        for btn in row:
-                            if DOWNLOAD_BUTTON.lower() in btn.text.lower():
-                                await btn.click()
-                                button_clicked = True
-                                break
-                        if button_clicked:
-                            break
+        print("Message Sent")
+        print("Sent ID:", sent.id)
 
-            if file_path or html_content:
-                break
-                
-            await asyncio.sleep(0.2)
+        target_message = None
 
-        if file_path and os.path.exists(file_path):
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                html_content = f.read()
-            os.remove(file_path)
-
-        if html_content:
-            flat_records = parse_leakbase_html(html_content)
-            
-            # HIDDEN LAYER WATERMARK (Proxies can't filter this easily)
-            if flat_records:
-                flat_records[0]["_api_by"] = "@ProPortalx"
-
-            # Calculate Response Time & IST Timestamp
-            process_time = round(time.time() - start_time, 2)
-            ist = timezone(timedelta(hours=5, minutes=30))
-            indian_time = datetime.now(ist).strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-            indian_time = indian_time[:-2] + ":" + indian_time[-2:]
-
-            # DYNAMIC KEY WATERMARK
-            wm_key, wm_value = get_dynamic_watermark()
-
-            content = {
-                "status": True,
-                "query": message,
-                "record_count": len(flat_records),
-                "timestamp": indian_time,
-                "response_time": process_time,
-                "data": flat_records
-            }
-            
-            content[wm_key] = wm_value
-
-            # HEADER WATERMARK
-            return JSONResponse(
-                content=content,
-                headers={"X-Developed-By": "@ProPortalx"}
+        for i in range(30):
+            print(f"\nChecking Messages Attempt {i+1}")
+            await asyncio.sleep(2)
+            messages = await client.get_messages(
+                BOT_USERNAME,
+                limit=15
             )
 
-        return JSONResponse(content={"status": False, "error": "No file received or download failed"})
+            for msg in messages:
+                if msg.out:
+                    continue
+                if not msg.message:
+                    continue
+                if msg.id <= sent.id:
+                    continue
+                if msg.message.strip() == data.message.strip():
+                    continue
+
+                target_message = msg
+                print("\nFOUND BOT REPLY")
+                print(target_message.message[:200] + "...")
+                break
+
+            if target_message:
+                break
+
+        if not target_message:
+            return JSONResponse(content={
+                "status": False,
+                "error": "Bot reply timeout",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "response_time": round(time.time() - start_time, 2)
+            })
+
+        text = target_message.message
+
+        # Parse Data directly into a flat list
+        parsed_records = parse_message(text)
+        
+        # Inject hidden watermark inside the first record array (Anti-Proxy Layer 2)
+        if parsed_records:
+            parsed_records[0]["_api_by"] = "@ProPortalx"
+        
+        # Calculate process time & IST timestamp
+        process_time = round(time.time() - start_time, 2)
+        ist = timezone(timedelta(hours=5, minutes=30))
+        indian_time = datetime.now(ist).strftime("%Y-%m-%dT%H:%M:%S.%f%z")
+        indian_time = indian_time[:-2] + ":" + indian_time[-2:]
+
+        # Get Dynamic Keys (Anti-Proxy Layer 1)
+        wm_key, wm_value = get_dynamic_watermark()
+
+        # Build Response Content
+        content = {
+            "status": True,
+            "query": data.message,
+            "record_count": len(parsed_records),
+            "timestamp": indian_time,
+            "response_time": process_time,
+            "data": parsed_records
+        }
+        
+        # Inject Dynamic Root Watermark
+        content[wm_key] = wm_value
+
+        # Return with X-Developed-By Header (Anti-Proxy Layer 3)
+        return JSONResponse(
+            content=content,
+            headers={"X-Developed-By": "@ProPortalx"}
+        )
 
     except Exception as e:
-        print(f"ERROR: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print("\nERROR:")
+        print(str(e))
         return JSONResponse(content={
-            "status": False, 
+            "status": False,
             "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "response_time": round(time.time() - start_time, 2)
         })
 
+# =========================
+# BROWSER SEARCH
+# =========================
+
 @app.get("/test")
 async def test(q: str):
-    return await search({"message": q})
+    return await search(
+        Query(message=q)
+    )
 
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <title>Telegram LeakBase Parser API</title>
-            <style>
-                body { font-family: Arial, sans-serif; padding: 40px; max-width: 900px; margin: 0 auto; }
-                h2 { color: #333; }
-                input { width: 70%; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
-                button { padding: 12px 24px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-                button:hover { background: #0056b3; }
-                pre { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
-                .result { margin-top: 20px; }
-            </style>
-        </head>
-        <body>
-            <h2>🔍 Telegram LeakBase Parser API</h2>
-            <form action="/test" method="get">
-                <input type="text" name="q" placeholder="Enter query (phone, email, or name)" style="width: 70%;">
-                <button type="submit">Search</button>
-            </form>
-        </body>
-    </html>
-    """
+# =========================
+# ROOT
+# =========================
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+@app.get("/")
+async def root():
+    return {
+        "status": True,
+        "message": "API Running",
+        "developer": "@ProPortalx",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+# =========================
+# RUN
+# =========================
+# uvicorn main:app --host 0.0.0.0 --port $PORT
