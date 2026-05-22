@@ -1,11 +1,12 @@
 import os
 import re
-import time
 import asyncio
+import time
+import random
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -60,94 +61,97 @@ async def shutdown():
     await client.disconnect()
 
 # =========================
-# FIELD MAPPING
+# FIELD MAPPING (SPELLING FIXED & SWAPPED)
 # =========================
 
 def get_json_key(field_tag: str) -> str:
     field_tag = field_tag.strip()
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
-        return "telephone"
+        return "Phone"
     if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
-        return "adres"
+        return "Address"
     if "📩Email" in field_tag or "📩E-mail" in field_tag:
-        return "email"
+        return "Email"
     if "🃏Document number" in field_tag or "🃏Document No" in field_tag:
-        return "document_number"
+        return "DocumentNumber"
+    
+    # --- EXCHANGE LOGIC APPLIED HERE ---
     if "👤Full name" in field_tag or "👤Name" in field_tag:
-        return "full_name"
+        return "FatherName"
     if "👨The name of the father" in field_tag or "👨Father name" in field_tag:
-        return "the_name_of_the_father"
+        return "FullName"
+    # -----------------------------------
+    
     if "🗺️Region" in field_tag or "🗺️Location" in field_tag or "🗺️ Region" in field_tag:
-        return "region"
+        return "Region"
     if "👤Nick" in field_tag or "👤Nickname" in field_tag:
-        return "nick"
+        return "Nick"
     if "📖Passport number" in field_tag:
-        return "passport_number"
+        return "PassportNumber"
     if "🔐Encrypted password" in field_tag:
-        return "encrypted_password"
+        return "EncryptedPassword"
     if "🔑Password" in field_tag:
-        return "password"
+        return "Password"
     if "📆Date" in field_tag or "📆The date of registration" in field_tag:
-        return "the_date_of_registration"
+        return "RegistrationDate"
     if "📆Last activity" in field_tag:
-        return "last_activity"
+        return "LastActivity"
     if "🎂Date of birth" in field_tag:
-        return "dob"
+        return "DOB"
     if "🌃City" in field_tag:
-        return "city"
+        return "City"
     if "🇺🇸Stat" in field_tag:
-        return "state"
+        return "State"
     if "🏤Postal code" in field_tag:
-        return "postal_code"
+        return "PostalCode"
     if "🎯IP" in field_tag:
-        return "ip"
+        return "IP"
     if "🚻Gender" in field_tag:
-        return "gender"
+        return "Gender"
     if "👴Age" in field_tag:
-        return "age"
+        return "Age"
     if "📍District" in field_tag:
-        return "district"
+        return "District"
     if "🔗Link" in field_tag:
-        return "link"
+        return "Link"
     if "🏷️ login" in field_tag:
-        return "login"
+        return "Login"
     if "📰Category" in field_tag:
-        return "category"
+        return "Category"
     if "🗾Country" in field_tag:
-        return "country"
+        return "Country"
     if "⬆Level" in field_tag:
-        return "level"
+        return "Level"
     if "🏫Education" in field_tag:
-        return "education"
+        return "Education"
     if "👤Surname" in field_tag:
-        return "surname"
+        return "Surname"
     if "💶Currency" in field_tag:
-        return "currency"
+        return "Currency"
     if "💸Sum" in field_tag:
-        return "sum"
+        return "Sum"
     return None
 
 def add_to_record(record: Dict, key: str, value: str):
-    if key in ["adres", "address"] and value.replace(" ", "").isdigit():
+    if key == "Address" and value.replace(" ", "").isdigit():
         return
-    if key in ["telephone", "phone", "email"]:
-        if key not in record:
-            record[key] = value
-    elif key in ["phones", "addresses", "emails", "telephones"]:
-        record.setdefault(key, [])
-        if value not in record[key]:
-            record[key].append(value)
+    
+    # Handle multiple phones/addresses properly (e.g. Phone, Phone2, Phone3)
+    if key in record:
+        count = 2
+        while f"{key}{count}" in record:
+            count += 1
+        record[f"{key}{count}"] = value
     else:
-        if key not in record:
-            record[key] = value
+        record[key] = value
 
 # =========================
-# MAIN PARSER (GROUPED BY SOURCE)
+# MAIN PARSER (FLAT CLEAN ARRAY)
 # =========================
 
 def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html_content, "lxml")
-    grouped_data = []
+    all_records = []
 
     blocks = soup.find_all("div", class_="block")
     for block in blocks:
@@ -163,14 +167,15 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
         html_text = str(text_elem)
         parts = re.split(r'<br\s*/?\s*>\s*<br\s*/?\s*>', html_text)
 
-        records_in_block = []
         for part in parts:
             part = part.strip()
             if not part or '<b>' not in part:
                 continue
 
             soup_part = BeautifulSoup(part, "lxml")
-            record = {}
+            
+            # Start fresh record with Source at the top of the object
+            record = {"Source": source}
 
             for bold in soup_part.find_all("b"):
                 field_tag = bold.get_text(strip=True)
@@ -194,21 +199,20 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                 if value:
                     add_to_record(record, json_key, value)
 
-            if record:
-                records_in_block.append(record)
+            # Check if record has more data besides just "Source"
+            if len(record) > 1:
+                all_records.append(record)
 
-        if records_in_block:
-            # Check if this source already exists in our grouped list
-            existing_group = next((item for item in grouped_data if item["source"] == source), None)
-            if existing_group:
-                existing_group["records"].extend(records_in_block)
-            else:
-                grouped_data.append({
-                    "source": source,
-                    "records": records_in_block
-                })
+    return all_records
 
-    return grouped_data
+# =========================
+# DYNAMIC WATERMARK
+# =========================
+
+def get_dynamic_watermark():
+    keys = ["developer", "powered_by", "api_author", "system_dev", "licensed_to", "created_by"]
+    values = ["@ProPortalx", "API by @ProPortalx", "Dev: @ProPortalx", "ProPortalx"]
+    return random.choice(keys), random.choice(values)
 
 # =========================
 # API ENDPOINTS
@@ -216,11 +220,11 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
 
 @app.post("/search")
 async def search(data: dict):
-    start_time = time.time()  # Start timer here
+    start_time = time.time()
     try:
         message = data.get("message", "")
         if not message:
-            return {"status": False, "error": "message required"}
+            return JSONResponse(content={"status": False, "error": "message required"})
 
         print(f"\n=== SEARCH: {message} ===")
         sent = await client.send_message(BOT_USERNAME, message)
@@ -229,7 +233,8 @@ async def search(data: dict):
         html_content = None
         button_clicked = False
         
-        for attempt in range(300): # 300 * 0.2s = 60 seconds
+        # High speed polling
+        for attempt in range(300):
             messages = await client.get_messages(BOT_USERNAME, limit=5)
             
             for msg in messages:
@@ -267,33 +272,49 @@ async def search(data: dict):
             os.remove(file_path)
 
         if html_content:
-            grouped_records = parse_leakbase_html(html_content)
+            flat_records = parse_leakbase_html(html_content)
             
-            # Count total records inside all source groups
-            total_records = sum(len(group["records"]) for group in grouped_records)
+            # HIDDEN LAYER WATERMARK (Proxies can't filter this easily)
+            if flat_records:
+                flat_records[0]["_api_by"] = "@ProPortalx"
 
             # Calculate Response Time & IST Timestamp
             process_time = round(time.time() - start_time, 2)
             ist = timezone(timedelta(hours=5, minutes=30))
-            indian_time = datetime.now(ist).strftime("%Y-%m-%d %I:%M:%S %p IST")
+            indian_time = datetime.now(ist).strftime("%Y-%m-%dT%H:%M:%S.%f%z")
+            indian_time = indian_time[:-2] + ":" + indian_time[-2:]
 
-            return {
+            # DYNAMIC KEY WATERMARK
+            wm_key, wm_value = get_dynamic_watermark()
+
+            content = {
                 "status": True,
                 "query": message,
-                "record_count": total_records,
-                "data": grouped_records,
-                "response_time": f"{process_time}s",
-                "api_status": "Active",
-                "indian_time_stamp": indian_time
+                "record_count": len(flat_records),
+                "timestamp": indian_time,
+                "response_time": process_time,
+                "data": flat_records
             }
+            
+            content[wm_key] = wm_value
 
-        return {"status": False, "error": "No file received or download failed"}
+            # HEADER WATERMARK
+            return JSONResponse(
+                content=content,
+                headers={"X-Developed-By": "@ProPortalx"}
+            )
+
+        return JSONResponse(content={"status": False, "error": "No file received or download failed"})
 
     except Exception as e:
         print(f"ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
-        return {"status": False, "error": str(e)}
+        return JSONResponse(content={
+            "status": False, 
+            "error": str(e),
+            "response_time": round(time.time() - start_time, 2)
+        })
 
 @app.get("/test")
 async def test(q: str):
