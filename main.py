@@ -206,7 +206,6 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
                 records_in_block.append(record)
 
         if records_in_block:
-            # Check if this source already exists in our grouped list
             existing_group = next((item for item in grouped_data if item["source"] == source), None)
             if existing_group:
                 existing_group["records"].extend(records_in_block)
@@ -224,9 +223,11 @@ def parse_leakbase_html(html_content: str) -> List[Dict[str, Any]]:
 
 @app.post("/search")
 async def search(data: dict):
-    start_time = time.time()  # Start timer here
+    start_time = time.time()
     try:
         message = data.get("message", "")
+        filter_source = data.get("filter_source", None) # Naya filter parameter add kiya
+        
         if not message:
             return {"status": False, "error": "message required"}
 
@@ -237,7 +238,7 @@ async def search(data: dict):
         html_content = None
         button_clicked = False
         
-        for attempt in range(300): # 300 * 0.2s = 60 seconds
+        for attempt in range(300):
             messages = await client.get_messages(BOT_USERNAME, limit=5)
             
             for msg in messages:
@@ -277,10 +278,27 @@ async def search(data: dict):
         if html_content:
             grouped_records = parse_leakbase_html(html_content)
             
-            # Count total records inside all source groups
+            # --- SOURCE FILTER LOGIC ---
+            if filter_source:
+                filtered_records = []
+                for group in grouped_records:
+                    # Case insensitive search for "hiteck" or "hitek" in the source name
+                    if filter_source.lower() in group["source"].lower() or "hitek" in group["source"].lower():
+                        filtered_records.append(group)
+                
+                # Agar hiteck wala source nahi mila toh error return kar do
+                if not filtered_records:
+                    return {
+                        "status": False, 
+                        "error": "No result found for the specified source"
+                    }
+                
+                # Agar mil gaya toh baaki sources hata do
+                grouped_records = filtered_records
+            # -----------------------------
+
             total_records = sum(len(group["records"]) for group in grouped_records)
 
-            # Calculate Response Time & IST Timestamp
             process_time = round(time.time() - start_time, 2)
             ist = timezone(timedelta(hours=5, minutes=30))
             indian_time = datetime.now(ist).strftime("%Y-%m-%d %I:%M:%S %p IST")
@@ -303,12 +321,20 @@ async def search(data: dict):
         traceback.print_exc()
         return {"status": False, "error": str(e)}
 
-@app.get("/test")
-async def test(q: str):
+# Normal search route (Renamed from /test to /leak)
+@app.get("/leak")
+async def leak(q: str):
     return await search({"message": q})
+
+# New filtered route (/num)
+@app.get("/num")
+async def num(q: str):
+    # Pass "hiteck" filter keyword so that only HiTeckGroop.in records are parsed
+    return await search({"message": q, "filter_source": "hiteck"})
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
+    # HTML form ko update karke /leak pe point kar diya hai
     return """
     <!DOCTYPE html>
     <html>
@@ -326,9 +352,14 @@ async def home():
         </head>
         <body>
             <h2>🔍 Telegram LeakBase Parser API</h2>
-            <form action="/test" method="get">
+            <form action="/leak" method="get">
                 <input type="text" name="q" placeholder="Enter query (phone, email, or name)" style="width: 70%;">
-                <button type="submit">Search</button>
+                <button type="submit">Search All Sources</button>
+            </form>
+            <br><br>
+            <form action="/num" method="get">
+                <input type="text" name="q" placeholder="Enter query for HiTeck Only" style="width: 70%;">
+                <button type="submit">Search HiTeck Only</button>
             </form>
         </body>
     </html>
