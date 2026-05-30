@@ -66,11 +66,9 @@ async def shutdown():
 def get_json_key(field_tag: str) -> str:
     field_tag = field_tag.strip()
     
-    # Telephone ko Phone kar diya
     if "📞Telephone" in field_tag or "📞Phone" in field_tag or "📞Mobile" in field_tag:
         return "phone"
         
-    # Adres ki spelling sahi karke Address kar di
     if "🏘️Adres" in field_tag or "🏘️Address" in field_tag:
         return "address"
         
@@ -79,7 +77,6 @@ def get_json_key(field_tag: str) -> str:
     if "🃏Document number" in field_tag or "🃏Document No" in field_tag:
         return "document_number"
         
-    # Name aur Father Name ka exchange (Pehle wala fix)
     if "👤Full name" in field_tag or "👤Name" in field_tag:
         return "the_name_of_the_father"
     if "👨The name of the father" in field_tag or "👨Father name" in field_tag:
@@ -278,27 +275,41 @@ async def search(data: dict):
         if html_content:
             grouped_records = parse_leakbase_html(html_content)
             
-            # --- SOURCE FILTER LOGIC FOR /num ---
+            # --- SOURCE FILTER & PRIORITY SEPARATION LOGIC FOR /num ---
             if filter_source:
-                flat_filtered_records = []
+                main_target_records = []
+                alternative_records = []
+                
+                # Input string se saare digits nikal lo matching ke liye (e.g., 919998887779)
+                clean_query = ''.join(filter(str.isdigit, message))
+                
                 for group in grouped_records:
                     if filter_source.lower() in group["source"].lower() or "hitek" in group["source"].lower():
-                        # Sirf records nikal rahe hain, source hata diya
-                        flat_filtered_records.extend(group["records"])
+                        for rec in group["records"]:
+                            rec_phone = str(rec.get("phone", ""))
+                            # Agar record phone input query se exact match hai to priority list me daalo
+                            if clean_query and clean_query in rec_phone:
+                                main_target_records.append(rec)
+                            else:
+                                alternative_records.append(rec)
                 
-                if not flat_filtered_records:
+                if not main_target_records and not alternative_records:
                     return {
                         "status": False, 
                         "error": "No result found for the specified source"
                     }
                 
-                final_data = flat_filtered_records
-                total_records = len(flat_filtered_records)
+                # Response layout customized for /num
+                final_data = {
+                    "main_records": main_target_records,
+                    "alternative_records": alternative_records
+                }
+                total_records = len(main_target_records) + len(alternative_records)
             else:
-                # /leak ke liye pura grouped data aayega source ke sath
+                # /leak ke liye default grouped layout source ke sath
                 final_data = grouped_records
                 total_records = sum(len(group["records"]) for group in grouped_records)
-            # -----------------------------
+            # ----------------------------------------------------------
 
             process_time = round(time.time() - start_time, 2)
             ist = timezone(timedelta(hours=5, minutes=30))
@@ -327,7 +338,7 @@ async def search(data: dict):
 async def leak(q: str):
     return await search({"message": q})
 
-# New filtered route (Clean records without source)
+# New filtered route (Clean records with Priority Separation)
 @app.get("/num")
 async def num(q: str):
     return await search({"message": q, "filter_source": "hiteck"})
