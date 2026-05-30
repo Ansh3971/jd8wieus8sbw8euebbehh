@@ -226,7 +226,7 @@ async def search(data: dict):
     start_time = time.time()
     try:
         message = data.get("message", "")
-        filter_source = data.get("filter_source", None) # Naya filter parameter add kiya
+        filter_source = data.get("filter_source", None)
         
         if not message:
             return {"status": False, "error": "message required"}
@@ -278,26 +278,27 @@ async def search(data: dict):
         if html_content:
             grouped_records = parse_leakbase_html(html_content)
             
-            # --- SOURCE FILTER LOGIC ---
+            # --- SOURCE FILTER LOGIC FOR /num ---
             if filter_source:
-                filtered_records = []
+                flat_filtered_records = []
                 for group in grouped_records:
-                    # Case insensitive search for "hiteck" or "hitek" in the source name
                     if filter_source.lower() in group["source"].lower() or "hitek" in group["source"].lower():
-                        filtered_records.append(group)
+                        # Sirf records nikal rahe hain, source hata diya
+                        flat_filtered_records.extend(group["records"])
                 
-                # Agar hiteck wala source nahi mila toh error return kar do
-                if not filtered_records:
+                if not flat_filtered_records:
                     return {
                         "status": False, 
                         "error": "No result found for the specified source"
                     }
                 
-                # Agar mil gaya toh baaki sources hata do
-                grouped_records = filtered_records
+                final_data = flat_filtered_records
+                total_records = len(flat_filtered_records)
+            else:
+                # /leak ke liye pura grouped data aayega source ke sath
+                final_data = grouped_records
+                total_records = sum(len(group["records"]) for group in grouped_records)
             # -----------------------------
-
-            total_records = sum(len(group["records"]) for group in grouped_records)
 
             process_time = round(time.time() - start_time, 2)
             ist = timezone(timedelta(hours=5, minutes=30))
@@ -307,7 +308,7 @@ async def search(data: dict):
                 "status": True,
                 "query": message,
                 "record_count": total_records,
-                "data": grouped_records,
+                "data": final_data,
                 "response_time": f"{process_time}s",
                 "api_status": "Active",
                 "indian_time_stamp": indian_time
@@ -321,20 +322,18 @@ async def search(data: dict):
         traceback.print_exc()
         return {"status": False, "error": str(e)}
 
-# Normal search route (Renamed from /test to /leak)
+# Normal search route (Grouped with source)
 @app.get("/leak")
 async def leak(q: str):
     return await search({"message": q})
 
-# New filtered route (/num)
+# New filtered route (Clean records without source)
 @app.get("/num")
 async def num(q: str):
-    # Pass "hiteck" filter keyword so that only HiTeckGroop.in records are parsed
     return await search({"message": q, "filter_source": "hiteck"})
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    # HTML form ko update karke /leak pe point kar diya hai
     return """
     <!DOCTYPE html>
     <html>
